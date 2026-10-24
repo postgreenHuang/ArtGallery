@@ -50,7 +50,7 @@ export interface Settings {
   model: string;
   useAi: boolean;
   scope: "google" | "commons";
-  theme: "light" | "dark" | "system";
+  theme: "light" | "contrast" | "warm" | "dark" | "system";
 }
 export interface Library {
   version: 1;

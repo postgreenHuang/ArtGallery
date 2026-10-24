@@ -19,6 +19,46 @@ const fixture = {
     },
   ],
 };
+test("fullscreen browses artworks from the same search result", async ({ page }) => {
+  const second = {
+    ...fixture,
+    pageid: 102,
+    title: "File:Impression, Sunrise.jpg",
+    index: 2,
+    imageinfo: [{
+      ...fixture.imageinfo[0],
+      url: "https://upload.wikimedia.org/sunrise.jpg",
+      thumburl: "https://thumb.wikimedia.org/sunrise.jpg",
+      extmetadata: {
+        ...fixture.imageinfo[0].extmetadata,
+        ObjectName: { value: "Impression, Sunrise" },
+      },
+    }],
+  };
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) =>
+    route.fulfill({ json: { query: { pages: [fixture, second] } } }),
+  );
+  await page.route("https://thumb.wikimedia.org/**", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("莫奈");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(page.getByRole("button", { name: "欣赏 Impression, Sunrise" })).toBeVisible();
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await expect(page.getByRole("dialog", { name: "全屏欣赏 Water lilies" })).toBeVisible();
+  await expect(page.locator(".viewer-position")).toHaveText("1 / 2");
+  await expect(page.getByRole("button", { name: "上一张" })).toBeDisabled();
+  await page.getByRole("button", { name: "下一张" }).click();
+  await expect(page.getByRole("dialog", { name: "全屏欣赏 Impression, Sunrise" })).toBeVisible();
+  await expect(page.locator(".viewer-position")).toHaveText("2 / 2");
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByRole("dialog", { name: "全屏欣赏 Water lilies" })).toBeVisible();
+});
 test("discovery refresh rotates artists and similar opens a seeded inspiration chat", async ({
   page,
 }) => {
@@ -106,6 +146,7 @@ test("discovery refresh rotates artists and similar opens a seeded inspiration c
 test("original download rate limit explains retry while thumbnails stay visible", async ({
   page,
 }) => {
+  let allowOriginal = false;
   await page.route("https://commons.wikimedia.org/w/api.php?**", (route) =>
     route.fulfill({ json: { query: { pages: [fixture] } } }),
   );
@@ -119,7 +160,10 @@ test("original download rate limit explains retry while thumbnails stay visible"
     }),
   );
   await page.route("https://upload.wikimedia.org/**", (route) =>
-    route.fulfill({ status: 429, body: "Too many requests" }),
+    route.fulfill(allowOriginal ? {
+      contentType: "image/png",
+      body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+    } : { status: 429, body: "Too many requests" }),
   );
   await page.goto("/");
   await expect(
@@ -132,6 +176,47 @@ test("original download rate limit explains retry while thumbnails stay visible"
   await expect(
     page.locator(".collection-section .art-image img"),
   ).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(page.getByRole("heading", { name: "Water lilies" })).toBeVisible();
+  await expect(page.getByText("原图待下载 · 点击书签重试")).toBeVisible();
+  allowOriginal = true;
+  await page.getByRole("button", { name: "重试下载原图" }).click();
+  await expect(page.getByRole("button", { name: "已在画架 · 原图" })).toBeVisible();
+});
+test("clear light and warm paper themes save and render distinct palettes", async ({ page }) => {
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) =>
+    route.fulfill({ json: { query: { pages: [fixture] } } }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await page.getByLabel("界面主题").selectOption("contrast");
+  await page.getByRole("button", { name: "保存偏好" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "contrast");
+  await expect(page.locator(".sidebar")).toHaveCSS("background-color", "rgb(234, 241, 233)");
+  const contrast = await page.locator(".sidebar-intro").evaluate((node) => {
+    const channels = (color: string) => (color.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+    const luminance = (color: string) =>
+      channels(color).map((value) => {
+        const component = value / 255;
+        return component <= 0.04045 ? component / 12.92 : ((component + 0.055) / 1.055) ** 2.4;
+      }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const text = luminance(getComputedStyle(node).color);
+    const background = luminance(getComputedStyle(node.closest(".sidebar")!).backgroundColor);
+    return (Math.max(text, background) + 0.05) / (Math.min(text, background) + 0.05);
+  });
+  expect(contrast).toBeGreaterThanOrEqual(7);
+  await page.screenshot({ path: "test-results/clear-light-theme.png", fullPage: true });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "contrast");
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await page.getByLabel("界面主题").selectOption("warm");
+  await page.getByRole("button", { name: "保存偏好" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "warm");
+  await expect(page.locator(".sidebar")).toHaveCSS("background-color", "rgb(236, 223, 202)");
+  await page.screenshot({ path: "test-results/warm-paper-theme.png", fullPage: true });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "warm");
 });
 test("search, thumbnail-first, collect, reload offline, history and settings", async ({
   page,
@@ -264,6 +349,9 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await expect(
     page.getByRole("heading", { name: "《Water lilies》的讲解" }),
   ).toBeVisible();
+  await expect(page.getByText("时代背景：馆藏标注创作于 1916", { exact: false })).toBeVisible();
+  await expect(page.getByText("作者：馆藏署名为 Claude Monet", { exact: false })).toBeVisible();
+  await expect(page.getByText("技法与风格流派：现有馆藏资料不足", { exact: false })).toBeVisible();
   await page
     .getByRole("textbox", { name: "向策展人描述想看的画作" })
     .fill("画面用了什么技法？");

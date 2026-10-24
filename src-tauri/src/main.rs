@@ -7,8 +7,20 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::io::AsyncWriteExt;
 
 struct LibraryState { root: PathBuf, last: Option<String> }
-struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>> }
+struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>>, query_cooldown: Mutex<Option<Instant>>, image_cooldown: Mutex<Option<Instant>>, query_pacing: tokio::sync::Mutex<Instant> }
 fn err(e: impl std::fmt::Display) -> String { e.to_string() }
+fn check_cooldown(until:&Mutex<Option<Instant>>,label:&str)->Result<(),String>{
+    let deadline=until.lock().map_err(err)?;
+    if let Some(remaining)=deadline.and_then(|value|value.checked_duration_since(Instant::now())){
+        return Err(format!("Wikimedia {label}暂时受限（HTTP 429），请约 {} 分钟后再试。",remaining.as_secs().div_ceil(60).max(1)))
+    }
+    Ok(())
+}
+fn note_cooldown(until:&Mutex<Option<Instant>>,response:&reqwest::Response,label:&str)->String{
+    let seconds=response.headers().get(reqwest::header::RETRY_AFTER).and_then(|header|header.to_str().ok()).and_then(|value|value.parse::<u64>().ok()).unwrap_or(300).clamp(1,3600);
+    if let Ok(mut deadline)=until.lock(){*deadline=Some(Instant::now()+Duration::from_secs(seconds));}
+    format!("Wikimedia {label}暂时受限（HTTP 429），请约 {} 分钟后再试。",seconds.div_ceil(60))
+}
 fn check_original_cooldown(state:&AppState)->Result<(),String>{
     let until=state.original_cooldown.lock().map_err(err)?;
     if let Some(remaining)=until.and_then(|deadline|deadline.checked_duration_since(Instant::now())) {
@@ -93,8 +105,15 @@ fn cached_image(id:u64,variant:String,state:State<AppState>)->Result<Option<Stri
 async fn commons_query(query:String,state:State<'_,AppState>)->Result<Value,String>{
     let mut url=reqwest::Url::parse("https://commons.wikimedia.org/w/api.php").unwrap();url.set_query(Some(&query));
     if url.query_pairs().any(|(k,v)|k=="action"&&v!="query"){return Err("仅允许查询接口".into())}
+    check_cooldown(&state.query_cooldown,"查询")?;
+    {
+        let mut next=state.query_pacing.lock().await;
+        if let Some(wait)=next.checked_duration_since(Instant::now()){tokio::time::sleep(wait).await;}
+        check_cooldown(&state.query_cooldown,"查询")?;
+        *next=Instant::now()+Duration::from_millis(750);
+    }
     let response=state.client.get(url).send().await.map_err(err)?;
-    if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{return Err("Wikimedia 查询暂时受限（HTTP 429），请稍后刷新。".into())}
+    if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{return Err(note_cooldown(&state.query_cooldown,&response,"查询"))}
     response.error_for_status().map_err(err)?.json().await.map_err(err)
 }
 #[tauri::command]
@@ -116,10 +135,10 @@ async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state
         let source=root.join(format!("images/{id}{suffix}.{ext}"));
         if source.is_file(){let relative=format!("{directory}/{id}.{ext}");fs::create_dir_all(root.join(directory)).map_err(err)?;fs::copy(source,root.join(&relative)).map_err(err)?;return Ok(relative)}
     }}
-    if variant=="original"||variant=="collection"{check_original_cooldown(&state)?;}
+    if variant=="original"||variant=="collection"{check_original_cooldown(&state)?;}else{check_cooldown(&state.image_cooldown,"图片下载")?;}
     let response=state.client.get(validated).timeout(Duration::from_secs(if variant=="original"||variant=="collection"{300}else{45})).send().await.map_err(err)?;
     if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{
-        return Err(if variant=="original"||variant=="collection"{note_original_rate_limit(&state,&response)}else{"Wikimedia 缩略图暂时受限（HTTP 429），请稍后重试。".into()})
+        return Err(if variant=="original"||variant=="collection"{note_original_rate_limit(&state,&response)}else{note_cooldown(&state.image_cooldown,&response,"图片下载")})
     }
     let mut response=response.error_for_status().map_err(err)?;
     let ext=match response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or(""){"image/jpeg"=>"jpg","image/png"=>"png","image/webp"=>"webp",_=>return Err("不支持的图片类型".into())};
@@ -209,28 +228,69 @@ fn save_api_key(base_url:String,key:String)->Result<(),String>{let e=credential(
 fn has_api_key(base_url:String)->Result<bool,String>{match credential(&base_url)?.get_password(){Ok(_)=>Ok(true),Err(keyring::Error::NoEntry)=>Ok(false),Err(e)=>Err(err(e))}}
 #[tauri::command]
 fn open_external(url:String,app:tauri::AppHandle)->Result<(),String>{let parsed=reqwest::Url::parse(&url).map_err(err)?;if parsed.scheme()!="https"||!parsed.username().is_empty()||parsed.password().is_some(){return Err("只允许打开 HTTPS 来源链接".into())}app.opener().open_url(url,None::<&str>).map_err(err)}
+fn ai_text(value:&Value)->Result<String,String>{
+    let choice=&value["choices"][0];
+    let content=&choice["message"]["content"];
+    let text=match content {
+        Value::String(text)=>Some(text.clone()),
+        Value::Array(parts)=>Some(parts.iter().filter_map(|part|{
+            if !part["type"].is_null() && part["type"]!="text" && part["type"]!="output_text" {return None}
+            part.as_str().or_else(||part["text"].as_str()).or_else(||part["text"]["value"].as_str())
+        }).collect::<Vec<_>>().join("")),
+        Value::Object(_)=>content["text"].as_str().or_else(||content["text"]["value"].as_str()).map(str::to_string),
+        _=>None,
+    }.or_else(||choice["text"].as_str().map(str::to_string))
+     .or_else(||value["output_text"].as_str().map(str::to_string));
+    if let Some(text)=text.filter(|text|!text.trim().is_empty()){return Ok(text)}
+    if let Some(refusal)=choice["message"]["refusal"].as_str(){return Err(format!("AI 拒绝了请求：{}",refusal.chars().take(160).collect::<String>()))}
+    if choice["finish_reason"]=="length" {return Err("AI 输出长度不足，未返回可用正文".into())}
+    if value["error"].is_object(){return Err("AI 服务返回了错误对象，请检查模型和 API 地址".into())}
+    Err("AI 响应没有可用正文；请检查所选模型是否支持 Chat Completions 文本输出".into())
+}
 #[tauri::command]
 async fn ai_plan(base_url:String,model:String,key:String,messages:Value,state:State<'_,AppState>)->Result<String,String>{
     let base=endpoint(&base_url)?;let url=format!("{}/chat/completions",base.as_str().trim_end_matches('/'));
     let secret=if key.is_empty(){credential(&base_url)?.get_password().unwrap_or_default()}else{key};
-    let mut request=state.client.post(url).json(&json!({"model":model,"messages":messages,"temperature":0.5,"max_tokens":900}));
-    if !secret.is_empty(){request=request.bearer_auth(secret);}
-    let response=request.send().await.map_err(|_|"无法连接 AI 服务，请检查地址和网络".to_string())?;
-    let status=response.status();if !status.is_success(){return Err(format!("AI 服务返回 {status}，请检查密钥、模型和额度"))}
-    let value:Value=response.json().await.map_err(err)?;value["choices"][0]["message"]["content"].as_str().map(str::to_string).ok_or_else(||"AI 响应格式不兼容".into())
+    for max_tokens in [900,4096] {
+        let mut request=state.client.post(&url).json(&json!({"model":model,"messages":messages,"temperature":0.5,"max_tokens":max_tokens}));
+        if !secret.is_empty(){request=request.bearer_auth(&secret);}
+        let response=request.send().await.map_err(|_|"无法连接 AI 服务，请检查地址和网络".to_string())?;
+        let status=response.status();if !status.is_success(){return Err(format!("AI 服务返回 {status}，请检查密钥、模型和额度"))}
+        let value:Value=response.json().await.map_err(|_|"AI 服务返回了非 JSON 响应".to_string())?;
+        if max_tokens==900 && value["choices"][0]["finish_reason"]=="length" {continue}
+        return ai_text(&value)
+    }
+    Err("AI 输出长度不足，未返回可用正文".into())
 }
 fn main(){tauri::Builder::default().plugin(tauri_plugin_opener::init()).setup(|app|{
     let config=app.path().app_config_dir()?;let pointer=config.join("location.json");
     let root:PathBuf=if pointer.exists(){let root:PathBuf=serde_json::from_str(&fs::read_to_string(pointer)?)?;if !root.is_dir(){return Err(format!("资料库目录不可用，请等待同步或恢复该目录：{}",root.display()).into())}root}else{app.path().app_data_dir()?.join("Library")};
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
-    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),original_cooldown:Mutex::new(None)});Ok(())
+    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),query_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
 }).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
 
 #[cfg(test)]
 mod tests {use super::*;
+    #[test]fn commons_cooldown_prevents_immediate_retries(){
+        let until=Mutex::new(Some(Instant::now()+Duration::from_secs(90)));
+        assert!(check_cooldown(&until,"查询").unwrap_err().contains("2 分钟"));
+        *until.lock().unwrap()=Some(Instant::now()-Duration::from_secs(1));
+        assert!(check_cooldown(&until,"查询").is_ok());
+    }
+    #[test]fn ai_text_accepts_common_completion_shapes(){
+        assert_eq!(ai_text(&json!({"choices":[{"message":{"content":"hello"}}]})).unwrap(),"hello");
+        assert_eq!(ai_text(&json!({"choices":[{"message":{"content":[{"type":"text","text":"one"},{"type":"reasoning","text":"hidden"},{"type":"text","text":{"value":" two"}}]}}]})).unwrap(),"one two");
+        assert_eq!(ai_text(&json!({"choices":[{"text":"legacy"}]})).unwrap(),"legacy");
+        assert_eq!(ai_text(&json!({"output_text":"response"})).unwrap(),"response");
+    }
+    #[test]fn ai_text_explains_empty_or_refused_responses(){
+        assert!(ai_text(&json!({"choices":[{"finish_reason":"length","message":{"content":null}}]})).unwrap_err().contains("长度不足"));
+        assert!(ai_text(&json!({"choices":[{"message":{"content":null,"refusal":"blocked"}}]})).unwrap_err().contains("blocked"));
+        assert!(ai_text(&json!({"choices":[{"message":{"content":null,"reasoning_content":"private"}}]})).unwrap_err().contains("没有可用正文"));
+    }
     #[test]fn original_rate_limit_waits_without_blocking_local_reads(){
-        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None)};
+        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),query_pacing:tokio::sync::Mutex::new(Instant::now())};
         assert!(check_original_cooldown(&state).is_ok());
         *state.original_cooldown.lock().unwrap()=Some(Instant::now()+Duration::from_secs(90));
         assert!(check_original_cooldown(&state).unwrap_err().contains("2 分钟"));

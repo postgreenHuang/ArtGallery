@@ -54,8 +54,10 @@ import {
 import { highResolution, searchArt } from "./services/commons";
 import { discoverArt } from "./services/discovery";
 import {
+  artworkIntroductionPrompt,
   explainArtwork,
   isRecommendationRequest,
+  localArtworkIntroduction,
   planSearch,
   suggestArtists,
 } from "./services/ai";
@@ -109,12 +111,12 @@ function ArtImage({
     setFailed(false);
     setSrc(saved || desktop ? "" : art.thumb);
     const image =
-      saved && preferOriginal
+      saved && preferOriginal && isOriginalLocal(saved.local)
         ? localImage(saved.local)
         : saved
           ? cacheArtwork(art.id, art.thumb, "preview")
               .then(localImage)
-              .catch(() => localImage(saved.local))
+              .catch(() => saved.local ? localImage(saved.local) : art.thumb)
           : desktop
             ? cacheArtwork(art.id, art.thumb).then(localImage)
             : null;
@@ -190,6 +192,7 @@ function ArtCard({
         <div>
           <p>{art.artist.slice(0, 100)}</p>
           <h3 title={art.title}>{art.title}</h3>
+          {saved && !originalSaved && <small className="art-pending">原图待下载 · 点击书签重试</small>}
         </div>
         <button
           className={`icon-button save ${saved ? "is-saved" : ""}`}
@@ -197,14 +200,14 @@ function ArtCard({
             saved
               ? originalSaved
                 ? "已在画架 · 原图"
-                : "升级画架为原图"
+                : "重试下载原图"
               : "加入画架"
           }
           title={
             saved
               ? originalSaved
                 ? "已在画架 · 原图"
-                : "升级画架为原图"
+                : "重试下载原图"
               : "加入画架 · 下载原图"
           }
           onClick={onSave}
@@ -266,6 +269,7 @@ export default function App() {
   const [saving, setSaving] = useState<number[]>([]);
   const [detail, setDetail] = useState<Artwork | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerArts, setViewerArts] = useState<Artwork[]>([]);
   const viewerFromDetail = useRef(false);
   const browserFullscreen = useRef(false);
   const [hd, setHd] = useState<Record<number, string>>({});
@@ -343,8 +347,10 @@ export default function App() {
     document.addEventListener("fullscreenchange", changed);
     return () => document.removeEventListener("fullscreenchange", changed);
   }, [closeViewer]);
-  function openViewer(art: Artwork, fromDetail = false) {
+  function openViewer(art: Artwork, fromDetail = false, arts?: Artwork[]) {
     viewerFromDetail.current = fromDetail;
+    if (arts) setViewerArts(arts);
+    else if (!viewerArts.some((item) => item.id === art.id)) setViewerArts([art]);
     setDetail(art);
     setContext(null);
     setViewerOpen(true);
@@ -466,11 +472,21 @@ export default function App() {
         conversation.kind === "artwork" && conversation.artwork?.id === art.id,
     );
     const id = existing?.id || crypto.randomUUID();
+    const intro = localArtworkIntroduction(art);
+    const replaceIntro =
+      !!existing &&
+      existing.messages.length === 1 &&
+      /^(我们来慢慢看|先来认识)/.test(existing.messages[0].text);
+    const introId = !existing
+      ? crypto.randomUUID()
+      : replaceIntro
+        ? existing.messages[0].id
+        : null;
     if (!existing) {
       const greeting: Message = {
-        id: crypto.randomUUID(),
+        id: introId || crypto.randomUUID(),
         role: "assistant",
-        text: `我们来慢慢看《${art.title}》。馆藏标注的作者是 ${art.artist}，创作年代为 ${art.date}。你可以问我画面细节、技法、时代背景，或说说你最先注意到哪里。`,
+        text: intro,
       };
       setLibrary((value) => ({
         ...value,
@@ -486,6 +502,13 @@ export default function App() {
           ...value.conversations,
         ],
       }));
+    } else if (replaceIntro) {
+      updateConversation(id, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.id === introId ? { ...message, text: intro } : message,
+        ),
+      }));
     }
     if (viewerOpen) closeViewer();
     setDetail(null);
@@ -493,6 +516,48 @@ export default function App() {
     setActive(id);
     setInput("");
     setView("chat");
+    if (introId && library.settings.useAi && desktop)
+      void introduceArtwork(art, id, introId);
+  }
+  async function introduceArtwork(art: Artwork, id: string, introId: string) {
+    setBusy(true);
+    setPhase("正在准备作品导览…");
+    const controller = new AbortController();
+    request.current = controller;
+    try {
+      const reply = await explainArtwork(
+        art,
+        artworkIntroductionPrompt,
+        [],
+        library.settings,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      updateConversation(id, (conversation) => ({
+        ...conversation,
+        updated: Date.now(),
+        messages: conversation.messages.map((message) =>
+          message.id === introId
+            ? { ...message, text: reply.usedImage ? reply.text : `当前模型未读取图片，以下导览依据馆藏资料。\n${reply.text}` }
+            : message,
+        ),
+      }));
+    } catch (error) {
+      if (!controller.signal.aborted)
+        updateConversation(id, (conversation) => ({
+          ...conversation,
+          messages: conversation.messages.map((message) =>
+            message.id === introId
+              ? { ...message, text: `${localArtworkIntroduction(art)}\n\nAI 导览暂不可用：${errorText(error)}` }
+              : message,
+          ),
+        }));
+    } finally {
+      if (request.current === controller) {
+        request.current = null;
+        setBusy(false);
+      }
+    }
   }
   async function sendArtwork(text: string) {
     const conversation = current;
@@ -856,6 +921,14 @@ export default function App() {
     }
     if (saving.includes(art.id)) return;
     setSaving((s) => [...s, art.id]);
+    if (!existing) {
+      setLibrary((l) => ({
+        ...l,
+        saved: l.saved.some((s) => s.artwork.id === art.id)
+          ? l.saved
+          : [{ artwork: art, local: "", savedAt: Date.now() }, ...l.saved],
+      }));
+    }
     try {
       const local = await cacheArtwork(art.id, art.original, "collection");
       setLibrary((l) => ({
@@ -879,7 +952,7 @@ export default function App() {
           : "已收入画架 · 原图已保存在本地",
       );
     } catch (e) {
-      setToast(errorText(e));
+      setToast(`作品已在画架；原图暂未下载：${errorText(e)} 可稍后在画架中重试。`);
     } finally {
       setSaving((s) => s.filter((id) => id !== art.id));
     }
@@ -927,7 +1000,7 @@ export default function App() {
             art={art}
             saved={savedFor(art.id)}
             pending={saving.includes(art.id)}
-            onOpen={() => openViewer(art)}
+            onOpen={() => openViewer(art, false, arts)}
             onSave={() => void save(art)}
             onSimilar={
               showSimilar
@@ -939,13 +1012,14 @@ export default function App() {
                     )
                 : undefined
             }
-            onContext={(x, y) =>
+            onContext={(x, y) => {
+              setViewerArts(arts);
               setContext({
                 art,
                 x: Math.min(x, window.innerWidth - 250),
                 y: Math.min(y, window.innerHeight - 220),
-              })
-            }
+              });
+            }}
           />
         ))}
       </div>
@@ -1322,7 +1396,7 @@ export default function App() {
                   <p>留下心动的瞬间，慢慢看，常常看。</p>
                 </div>
                 <span className="offline-pill">
-                  <Check size={14} /> 本地图片 · 离线可看
+                  <Check size={14} /> {library.saved.some((s) => !isOriginalLocal(s.local)) ? "画架已保存 · 部分原图待下载" : "本地图片 · 离线可看"}
                 </span>
               </div>
               <label className="filter">
@@ -1513,7 +1587,10 @@ export default function App() {
               {current?.kind === "artwork" && current.artwork && (
                 <button
                   className="artwork-chat-context"
-                  onClick={() => setDetail(current.artwork!)}
+                  onClick={() => {
+                    setViewerArts([current.artwork!]);
+                    setDetail(current.artwork!);
+                  }}
                 >
                   <ArtImage
                     art={current.artwork}
@@ -1803,7 +1880,7 @@ export default function App() {
                 {isOriginalLocal(savedFor(detail.id)?.local)
                   ? "已收入我的画架 · 原图"
                   : savedFor(detail.id)
-                    ? "升级画架为原图"
+                    ? "重试下载原图"
                     : "收入我的画架 · 下载原图"}
               </button>
               <button
@@ -1841,12 +1918,24 @@ export default function App() {
       )}
       {viewerOpen && detail && (
         <FullscreenViewer
+          key={detail.id}
           art={detail}
           saved={
             isOriginalLocal(savedFor(detail.id)?.local)
               ? savedFor(detail.id)
               : undefined
           }
+          position={Math.max(0, viewerArts.findIndex((item) => item.id === detail.id))}
+          total={viewerArts.length}
+          onPrevious={() => {
+            const index = viewerArts.findIndex((item) => item.id === detail.id);
+            if (index > 0) setDetail(viewerArts[index - 1]);
+          }}
+          onNext={() => {
+            const index = viewerArts.findIndex((item) => item.id === detail.id);
+            if (index >= 0 && index < viewerArts.length - 1)
+              setDetail(viewerArts[index + 1]);
+          }}
           onClose={closeViewer}
         />
       )}
@@ -2186,6 +2275,8 @@ function SettingsDialog({
                 }
               >
                 <option value="light">浅色 · 展厅日光</option>
+                <option value="contrast">清晰浅色 · 高对比文字</option>
+                <option value="warm">暖纸色 · 柔和米黄</option>
                 <option value="dark">深色 · 夜间观画</option>
                 <option value="system">跟随系统</option>
               </select>

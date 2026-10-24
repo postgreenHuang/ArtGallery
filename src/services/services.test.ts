@@ -2,11 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("./storage", () => ({ desktop: false }));
 import { buildSearch, normalize, plain, safeImage, searchArt } from "./commons";
 import {
+  artworkIntroductionPrompt,
   isRecommendationRequest,
+  localArtworkIntroduction,
   localPlan,
   parsePlan,
   parseSuggestions,
 } from "./ai";
+import type { Artwork } from "../types";
 describe("Commons data boundary", () => {
   it("accepts current thumbnail CDN but rejects lookalike and credential URLs", () => {
     expect(safeImage("https://thumb.wikimedia.org/a.jpg")).toBe(true);
@@ -88,6 +91,18 @@ describe("Commons data boundary", () => {
   });
 });
 describe("curator planning", () => {
+  it("introduces an artwork before any question without inventing its school", () => {
+    const intro = localArtworkIntroduction({
+      title: "Water lilies",
+      artist: "Claude Monet",
+      date: "1916",
+      description: "画面描绘池塘。",
+    } as Artwork);
+    expect(intro).toContain("时代背景：馆藏标注创作于 1916");
+    expect(intro).toContain("作者：馆藏署名为 Claude Monet");
+    expect(intro).toContain("技法与风格流派：现有馆藏资料不足");
+    expect(artworkIntroductionPrompt).toContain("不要等我提问");
+  });
   it("maps common Chinese artist and theme queries without AI", () => {
     expect(localPlan("推荐莫奈的睡莲").query).toBe("Claude Monet water lilies");
     expect(localPlan("我想看一些希施金的画").query).toBe("Ivan Shishkin");
@@ -109,6 +124,11 @@ describe("curator planning", () => {
       parsePlan('```json\n{"query":"Monet","explanation":"看看莫奈"}\n```')
         .query,
     ).toBe("Monet");
+    expect(
+      parsePlan('Here is the plan:\n```json\n{"query":"Monet","explanation":"看 { 花园 }"}\n```')
+        .explanation,
+    ).toBe("看 { 花园 }");
+    expect(() => parsePlan('{"query":"Monet"')).toThrow("不完整");
   });
   it("rejects invented result structures", () => {
     expect(() => parsePlan('{"url":"https://example.com/fake.jpg"}')).toThrow();

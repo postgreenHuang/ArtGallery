@@ -40,10 +40,34 @@ export function localPlan(input: string): Plan {
       : "已为你检索开放馆藏。点击作品欣赏细节，也可以把喜欢的作品收入画架。",
   };
 }
+function parseAiJson(text: string): Record<string, unknown> {
+  const start = text.indexOf("{");
+  if (start < 0) throw new Error("AI 未返回可解析的 JSON，请重试");
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index++) {
+    const char = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) {
+      try {
+        const value: unknown = JSON.parse(text.slice(start, index + 1));
+        if (value && typeof value === "object" && !Array.isArray(value))
+          return value as Record<string, unknown>;
+      } catch {
+        throw new Error("AI 返回的 JSON 不完整，请重试");
+      }
+    }
+  }
+  throw new Error("AI 返回的 JSON 不完整，请重试");
+}
 export function parsePlan(text: string): Plan {
-  const parsed = JSON.parse(
-    text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, ""),
-  );
+  const parsed = parseAiJson(text);
   if (
     typeof parsed.query !== "string" ||
     !parsed.query.trim() ||
@@ -103,9 +127,7 @@ export async function planSearch(
 }
 
 export function parseSuggestions(text: string): ArtistSuggestion[] {
-  const parsed = JSON.parse(
-    text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, ""),
-  );
+  const parsed = parseAiJson(text);
   const candidates = parsed.candidates ?? parsed.recommendations;
   if (!Array.isArray(candidates)) throw new Error("AI 未返回可选画家名称");
   return candidates
@@ -151,6 +173,15 @@ export async function suggestArtists(
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   return parseSuggestions(content);
 }
+
+export function localArtworkIntroduction(art: Artwork): string {
+  const date = art.date === "年代未标注" ? "馆藏未标注创作年代" : `馆藏标注创作于 ${art.date}`;
+  const artist = art.artist === "艺术家未标注" ? "馆藏未标注作者" : `馆藏署名为 ${art.artist}`;
+  return `先来认识《${art.title}》。\n\n时代背景：${date}。具体历史背景还需要结合可靠资料核对。\n\n作者：${artist}。${art.description ? `馆藏简介提到：${art.description.slice(0, 500)}` : "馆藏暂未提供更多作者与作品说明。"}\n\n技法与风格流派：现有馆藏资料不足以确定具体技法或流派，我不想凭标题猜测。你可以继续问我感兴趣的细节；配置 AI 后还能结合画面深入导览。`;
+}
+
+export const artworkIntroductionPrompt =
+  "请主动为第一次看这幅作品的观众做一段中文导览，不要等我提问。依次介绍作品所处的时代背景、作者及其创作脉络、画面可观察到的技法，以及有依据的风格或流派关联。结合画面和馆藏资料，具体而简洁地讲清楚这些方面；资料不足时明确说明，不要猜测作品的创作动机、收藏机构或未经证实的逸事。最后自然地邀请我继续追问。";
 
 export async function explainArtwork(
   art: Artwork,

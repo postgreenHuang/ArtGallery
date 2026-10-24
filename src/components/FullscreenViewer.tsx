@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
 import type { Artwork, SavedArtwork } from "../types";
 import { sizedImage } from "../services/commons";
 import {
@@ -28,10 +28,18 @@ const clamp = (value: number, maximum = 16) =>
 export default function FullscreenViewer({
   art,
   saved,
+  position,
+  total,
+  onPrevious,
+  onNext,
   onClose,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
+  position: number;
+  total: number;
+  onPrevious: () => void;
+  onNext: () => void;
   onClose: () => void;
 }) {
   const [source, setSource] = useState({
@@ -255,9 +263,19 @@ export default function FullscreenViewer({
     document.documentElement.style.overflow = "hidden";
     document.body.style.overflow = "hidden";
     const key = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("input, select, textarea, [contenteditable=true]")) return;
       if (event.key === "Escape") {
         event.stopPropagation();
         onClose();
+      }
+      if (event.key === "ArrowLeft" && position > 0) {
+        event.preventDefault();
+        onPrevious();
+      }
+      if (event.key === "ArrowRight" && position < total - 1) {
+        event.preventDefault();
+        onNext();
       }
       if (event.key === "+" || event.key === "=")
         setScale((s) => clamp(s * 1.25, maximum));
@@ -273,7 +291,7 @@ export default function FullscreenViewer({
       document.documentElement.style.overflow = htmlOverflow;
       document.body.style.overflow = bodyOverflow;
     };
-  }, [onClose, maximum]);
+  }, [onClose, onPrevious, onNext, position, total, maximum]);
 
   useEffect(() => {
     const element = canvas.current;
@@ -315,6 +333,7 @@ export default function FullscreenViewer({
         <div className="viewer-title">
           <strong>{art.title}</strong>
           <span>{art.artist}</span>
+          {total > 1 && <span className="viewer-position">{position + 1} / {total}</span>}
         </div>
         <div className="viewer-actions">
           <label className="viewer-quality-label" htmlFor="viewer-quality">
@@ -443,6 +462,30 @@ export default function FullscreenViewer({
           drag.current = null;
         }}
       >
+        {total > 1 && (
+          <>
+            <button
+              className="viewer-page viewer-page-previous"
+              aria-label="上一张"
+              title="上一张 · ←"
+              disabled={position === 0}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={onPrevious}
+            >
+              <ChevronLeft size={28} />
+            </button>
+            <button
+              className="viewer-page viewer-page-next"
+              aria-label="下一张"
+              title="下一张 · →"
+              disabled={position === total - 1}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={onNext}
+            >
+              <ChevronRight size={28} />
+            </button>
+          </>
+        )}
         <canvas
           ref={pixels}
           className="viewer-render-canvas"
@@ -493,7 +536,7 @@ export default function FullscreenViewer({
         )}
       </div>
       <div className="viewer-hint">
-        选择画质后按需下载 · 滚轮缩放 · 左键拖动 · Esc 退出
+        {total > 1 ? "← → 切换作品 · " : ""}选择画质后按需下载 · 滚轮缩放 · 左键拖动 · Esc 退出
       </div>
     </div>,
     document.body,

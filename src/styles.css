@@ -655,6 +655,12 @@ main {
   white-space: nowrap;
   letter-spacing: 0.2px;
 }
+.art-pending {
+  display: block;
+  margin-top: 3px;
+  color: #a35d40;
+  font-size: 10px;
+}
 .icon-button {
   padding: 6px;
   display: inline-flex;
@@ -1215,6 +1221,11 @@ main {
   font-size: 11px;
   color: #aab6a3;
 }
+.viewer-title .viewer-position {
+  flex-shrink: 0;
+  color: #dce8d7;
+  font-size: 12px;
+}
 .viewer-actions {
   display: flex;
   align-items: center;
@@ -1313,6 +1324,29 @@ main {
 .viewer-canvas:active {
   cursor: grabbing;
 }
+.viewer-page {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  width: 46px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  border-radius: 5px;
+  background: #1a211ae6;
+  color: #f4f2e9;
+  cursor: pointer;
+}
+.viewer-page:hover:not(:disabled) {
+  background: #3c493b;
+}
+.viewer-page:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.viewer-page-previous { left: 16px; }
+.viewer-page-next { right: 16px; }
 .viewer-render-canvas {
   position: absolute;
   inset: 0;
@@ -2124,4 +2158,185 @@ main {
 :root[data-theme="dark"] .skeleton {
   background: linear-gradient(100deg, #2d352f 25%, #39453a 45%, #2d352f 65%);
   background-size: 300% 100%;
+}
+
+:root[data-theme="contrast"] {
+  color-scheme: light;
+  --paper: #fbfdfa;
+  --ink: #1e2b22;
+  --muted: #425449;
+  --green: #264a33;
+  --border: #aebfb1;
+  --theme-sidebar: #eaf1e9;
+  --theme-surface: #ffffff;
+  --theme-card: #e7efe7;
+  --theme-active: #d5e6d7;
+  --theme-media: #dce7dd;
+  --theme-secondary: #3d5042;
+}
+:root[data-theme="warm"] {
+  color-scheme: light;
+  --paper: #f7f0e4;
+  --ink: #392d25;
+  --muted: #63564a;
+  --green: #715038;
+  --border: #cbbba5;
+  --theme-sidebar: #ecdfca;
+  --theme-surface: #fffbf3;
+  --theme-card: #f1e4d1;
+  --theme-active: #e6d0b3;
+  --theme-media: #e7d9c3;
+  --theme-secondary: #63564a;
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) {
+  background: var(--paper);
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) body,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .app-shell,
+:root:is([data-theme="contrast"], [data-theme="warm"]) main {
+  background: var(--paper);
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sidebar {
+  background: var(--theme-sidebar);
+  border-color: var(--border);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sidebar nav button.active,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sidebar nav button:hover,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .recent-list button:hover,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .recent-list .selected,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .history-tabs button.active,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artist-suggestions button:hover {
+  background: var(--theme-active);
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sidebar nav button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .recent-list button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .settings-nav,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sidebar-intro,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sidebar-section,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .recent-list > p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .local-label,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .topbar,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .breadcrumb,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .source-chip,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .hero p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .page-heading p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .chat-heading p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .composer-footer,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-caption p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-meta,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .page-footer,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .prompt-card small,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .history-list p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .field-hint,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .settings-dialog label,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .toggle-label small,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .detail-info dt,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .library-settings > p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sync-note p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sync-note small,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .cache-cleanup p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artist-suggestions small,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artist-suggestions .suggestion-reason,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artwork-chat-context em {
+  color: var(--theme-secondary);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .eyebrow,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .hero h1 span,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .hero h1 i,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .hero-annotation > span,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .text-button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .query-label,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .source-link,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .curator-label,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .similar-button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artwork-chat-context strong,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .detail-artist {
+  color: var(--green) !important;
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .message-text,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .detail-info p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .detail-info dd,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .description,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .history-list h3,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artist-suggestions strong {
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .composer,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .context-menu,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .settings-dialog,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .confirm-dialog,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-detail {
+  background: var(--theme-surface);
+  color: var(--ink);
+  border-color: var(--border);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .prompt-card,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .prompt-card.ochre,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .prompt-card.blue,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .history-tabs button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .empty-state,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artwork-chat-context,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .artist-suggestions button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .folder-path,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .sync-note,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .notice {
+  background: var(--theme-card);
+  border-color: var(--border);
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-open,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-image,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-card:nth-child(3n + 2) .art-image,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .art-card:nth-child(3n + 3) .art-image,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .detail-canvas {
+  background: var(--theme-media);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .message.user p,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .offline-pill {
+  background: var(--theme-card);
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .new-chat,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .send-button,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .primary-button {
+  background: var(--green);
+  color: #fff;
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .settings-dialog input:not([type="checkbox"]),
+:root:is([data-theme="contrast"], [data-theme="warm"]) .settings-dialog select {
+  background: var(--theme-surface);
+  border-color: var(--border);
+  color: var(--ink);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .composer textarea::placeholder,
+:root:is([data-theme="contrast"], [data-theme="warm"]) .filter input::placeholder {
+  color: var(--theme-secondary);
+}
+:root:is([data-theme="contrast"], [data-theme="warm"]) .chat-composer {
+  background: linear-gradient(transparent, var(--paper) 25%);
+}
+:root[data-theme="contrast"] .prompt-card strong,
+:root[data-theme="contrast"] .art-caption h3,
+:root[data-theme="contrast"] .message-text {
+  font-weight: 500;
+}
+:root[data-theme="contrast"] .hero-annotation small,
+:root[data-theme="contrast"] .collection-toolbar,
+:root[data-theme="contrast"] .section-heading h2 > span,
+:root[data-theme="contrast"] .prompt-number,
+:root[data-theme="contrast"] .prompt-card svg,
+:root[data-theme="contrast"] .collection-note p,
+:root[data-theme="contrast"] .collection-note em,
+:root[data-theme="contrast"] .settings-dialog label > span,
+:root[data-theme="contrast"] .composer-footer button,
+:root[data-theme="contrast"] .curator-label small,
+:root[data-theme="contrast"] .detail-canvas > span,
+:root[data-theme="contrast"] .image-placeholder,
+:root[data-theme="contrast"] .history-tabs span,
+:root[data-theme="contrast"] .filter,
+:root[data-theme="contrast"] .count {
+  color: var(--theme-secondary);
 }
