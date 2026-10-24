@@ -569,6 +569,27 @@ main {
 }
 .art-card {
   min-width: 0;
+  position: relative;
+}
+.art-image-retry {
+  position: absolute;
+  top: 190px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: var(--paper, #faf9f5);
+  color: var(--green);
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 1;
+}
+.art-image-retry:hover {
+  text-decoration: underline;
 }
 .art-open {
   display: block;

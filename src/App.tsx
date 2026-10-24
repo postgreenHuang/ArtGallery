@@ -44,6 +44,7 @@ import type {
 import { defaultLibrary } from "./types";
 import {
   cacheArtwork,
+  cachedArtwork,
   clearTemporaryImages,
   desktop,
   localImage,
@@ -100,19 +101,29 @@ function ArtImage({
   className = "",
   onClick,
   preferOriginal = false,
+  retryToken = 0,
+  onFailure,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
   className?: string;
   onClick?: () => void;
   preferOriginal?: boolean;
+  retryToken?: number;
+  onFailure?: (failed: boolean) => void;
 }) {
   const [src, setSrc] = useState(saved || (desktop && !art.provider) ? "" : art.thumb);
   const [failed, setFailed] = useState(false);
+  const attempts = useRef(new Set<string>());
+  const generation = useRef(0);
+  const fallbackBlob = useRef("");
   useEffect(() => {
     let alive = true;
     let blob = "";
+    generation.current += 1;
+    attempts.current.clear();
     setFailed(false);
+    onFailure?.(false);
     setSrc(saved || (desktop && !art.provider) ? "" : art.thumb);
     const image =
       saved && preferOriginal && isOriginalLocal(saved.local)
@@ -123,6 +134,10 @@ function ArtImage({
               .catch(() => saved.local ? localImage(saved.local) : art.thumb)
           : desktop && !art.provider
             ? cacheArtwork(art.id, art.thumb).then(localImage)
+            : art.provider
+              ? cachedArtwork(art.id, "preview")
+                  .then((local) => local || cachedArtwork(art.id, "medium"))
+                  .then((local) => local ? localImage(local) : art.thumb)
             : null;
     if (image)
       image
@@ -133,11 +148,63 @@ function ArtImage({
         .catch(() => {
           if (alive) setSrc(art.thumb);
         });
+    const useViewerCache = (event: Event) => {
+      if ((event as CustomEvent<number>).detail !== art.id) return;
+      void cachedArtwork(art.id, "preview")
+        .then((local) => local || cachedArtwork(art.id, "medium"))
+        .then((local) => local ? localImage(local) : null)
+        .then((url) => {
+          if (!url) return;
+          if (!alive) {
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+            return;
+          }
+          if (blob.startsWith("blob:")) URL.revokeObjectURL(blob);
+          blob = url;
+          setFailed(false);
+          onFailure?.(false);
+          setSrc(url);
+        })
+        .catch(() => {});
+    };
+    window.addEventListener("art-image-cached", useViewerCache);
     return () => {
       alive = false;
+      window.removeEventListener("art-image-cached", useViewerCache);
       if (blob.startsWith("blob:")) URL.revokeObjectURL(blob);
+      if (fallbackBlob.current.startsWith("blob:")) URL.revokeObjectURL(fallbackBlob.current);
+      fallbackBlob.current = "";
     };
-  }, [saved?.local, art.thumb, preferOriginal]);
+  }, [saved?.local, art.id, art.thumb, preferOriginal, retryToken, onFailure]);
+  function imageError() {
+    if (src !== art.thumb && src !== art.medium && !attempts.current.has("thumb")) {
+      attempts.current.add("thumb");
+      setSrc(art.thumb);
+      return;
+    }
+    if (art.provider && !attempts.current.has("cache")) {
+      attempts.current.add("cache");
+      const current = generation.current;
+      const url = art.provider === "chicago" ? art.medium || art.thumb : art.thumb;
+      const variant = art.provider === "chicago" ? "medium" : "preview";
+      setSrc("");
+      void cacheArtwork(art.id, url, variant).then(localImage).then((local) => {
+        if (generation.current === current) {
+          fallbackBlob.current = local;
+          setSrc(local);
+        }
+        else if (local.startsWith("blob:")) URL.revokeObjectURL(local);
+      }).catch(() => {
+        if (generation.current === current) {
+          setFailed(true);
+          onFailure?.(true);
+        }
+      });
+      return;
+    }
+    setFailed(true);
+    onFailure?.(true);
+  }
   return (
     <div className={`art-image ${className}`} onClick={onClick}>
       {!failed && src ? (
@@ -145,10 +212,7 @@ function ArtImage({
           src={src}
           alt={art.title}
           loading="lazy"
-          onError={() => {
-            if (src !== art.thumb) setSrc(art.thumb);
-            else setFailed(true);
-          }}
+          onError={imageError}
         />
       ) : (
         <div className="image-placeholder">
@@ -177,6 +241,8 @@ function ArtCard({
   pending: boolean;
 }) {
   const originalSaved = isOriginalLocal(saved?.local);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [imageRetry, setImageRetry] = useState(0);
   return (
     <article
       className="art-card"
@@ -190,11 +256,16 @@ function ArtCard({
         onClick={onOpen}
         aria-label={`欣赏 ${art.title}`}
       >
-        <ArtImage art={art} saved={saved} />
+        <ArtImage art={art} saved={saved} retryToken={imageRetry} onFailure={setImageFailed} />
         <span className="view-art">
           <Maximize2 size={16} /> 欣赏作品
         </span>
       </button>
+      {imageFailed && (
+        <button className="art-image-retry" onClick={() => setImageRetry((value) => value + 1)}>
+          <RefreshCw size={13} /> 重试缩略图
+        </button>
+      )}
       <div className="art-caption">
         <div>
           <p>{art.artist.slice(0, 100)}</p>

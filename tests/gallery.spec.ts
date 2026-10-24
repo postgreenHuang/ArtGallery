@@ -232,6 +232,47 @@ test("Wikimedia 429 still searches both museums and saves a museum painting", as
   await page.getByRole("button", { name: /我的画架/ }).click();
   await expect(page.getByRole("heading", { name: "Water lilies - Cleveland" })).toBeVisible();
 });
+test("Chicago cards recover from a failed thumbnail and can be retried", async ({ page }) => {
+  const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  let online = false;
+  await page.route("https://commons.wikimedia.org/**", (route) => route.fulfill({ status: 429, body: "limited" }));
+  await page.route("https://api.artic.edu/**", (route) => route.fulfill({ json: {
+    config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 3 },
+    data: [
+      { id: 101, title: "Chicago fallback", artist_display: "Artist", is_public_domain: true, image_id: "2d484387-2509-5e8e-2c43-22f9981972eb" },
+      { id: 102, title: "Chicago retry", artist_display: "Artist", is_public_domain: true, image_id: "3d484387-2509-5e8e-2c43-22f9981972eb" },
+      { id: 103, title: "Chicago viewer", artist_display: "Artist", is_public_domain: true, image_id: "4d484387-2509-5e8e-2c43-22f9981972eb" },
+    ],
+  } }));
+  await page.route("https://www.artic.edu/iiif/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/2d484387-") && url.includes("/843,"))
+      return route.fulfill({ contentType: "image/png", body: pixel });
+    if ((url.includes("/3d484387-") || url.includes("/4d484387-")) && online)
+      return route.fulfill({ contentType: "image/png", body: pixel });
+    return route.fulfill({ status: 429, body: "limited" });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("Chicago");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  const fallback = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago fallback" });
+  const retry = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago retry" });
+  const viewerCard = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago viewer" });
+  await expect(fallback.locator("img")).toHaveJSProperty("naturalWidth", 1);
+  await expect(fallback.getByText("图片暂不可用")).toHaveCount(0);
+  await expect(retry.getByRole("button", { name: "重试缩略图" })).toBeVisible();
+  await expect(viewerCard.getByRole("button", { name: "重试缩略图" })).toBeVisible();
+  online = true;
+  await retry.getByRole("button", { name: "重试缩略图" }).click();
+  await expect(retry.locator("img")).toHaveJSProperty("naturalWidth", 1);
+  await expect(retry.getByText("图片暂不可用")).toHaveCount(0);
+  await viewerCard.getByRole("button", { name: "欣赏 Chicago viewer" }).click();
+  await expect(page.getByRole("dialog", { name: "全屏欣赏 Chicago viewer" })).toBeVisible();
+  await page.getByRole("button", { name: "退出全屏" }).click();
+  await expect(viewerCard.locator("img")).toHaveJSProperty("naturalWidth", 1);
+  await expect(viewerCard.getByRole("button", { name: "重试缩略图" })).toHaveCount(0);
+});
 test("discovery paginates and remembers viewed recommendations across refreshes", async ({ page }) => {
   const seen = new Set<string>();
   const offsets: number[] = [];

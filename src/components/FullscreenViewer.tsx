@@ -95,6 +95,7 @@ export default function FullscreenViewer({
       return false;
     }
     if (url.startsWith("blob:")) ownedUrls.current.add(url);
+    window.dispatchEvent(new CustomEvent("art-image-cached", { detail: art.id }));
     return true;
   };
 
