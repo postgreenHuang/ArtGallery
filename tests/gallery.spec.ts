@@ -86,10 +86,12 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   expect(requests.some((url) => url.includes("iiurlwidth=2400"))).toBe(true);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
-  await page.getByRole("button", { name: "全屏欣赏" }).click();
   await expect(
     page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
   ).toBeVisible();
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "9000 × 6000px",
+  );
   await page.setViewportSize({ width: 1914, height: 1080 });
   expect(
     await page.locator(".fullscreen-viewer").evaluate((el) => ({
@@ -108,12 +110,10 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   expect(canvas).not.toBeNull();
   const centerX = canvas!.x + canvas!.width / 2;
   const centerY = canvas!.y + canvas!.height / 2;
-  await page.keyboard.down("Control");
   await page.mouse.move(centerX, centerY);
   await page.mouse.down();
   await page.mouse.move(centerX + 80, centerY + 40, { steps: 4 });
   await page.mouse.up();
-  await page.keyboard.up("Control");
   await expect
     .poll(() =>
       page
@@ -123,12 +123,21 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
     .toContain("translate(80px, 40px)");
   await page.locator(".viewer-canvas").dispatchEvent("wheel", {
     deltaY: -240,
-    ctrlKey: true,
     clientX: 700,
     clientY: 450,
   });
   await expect(page.locator(".viewer-scale")).not.toHaveText("100%");
   await page.getByRole("button", { name: "退出全屏" }).click();
+  await page
+    .getByRole("button", { name: "欣赏 Water lilies" })
+    .click({ button: "right" });
+  await page.getByRole("button", { name: "查看作品" }).click();
+  await page.getByRole("button", { name: "全屏欣赏 Water lilies" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "退出全屏" }).click();
+  await expect(page.getByRole("dialog", { name: "作品详情" })).toBeVisible();
   await page.getByRole("button", { name: "关闭作品详情" }).click();
   await page
     .getByRole("button", { name: "欣赏 Water lilies" })
@@ -201,4 +210,58 @@ test("similar-style request does not fall back to the named artist in direct mod
     page.getByRole("button", { name: "开启 AI 风格推荐" }),
   ).toBeVisible();
   expect(queries.every((url) => !url.includes("Shishkin"))).toBe(true);
+});
+test("artwork click loads original fullscreen and dark theme persists", async ({
+  page,
+}) => {
+  const originals: string[] = [];
+  const api: string[] = [];
+  const pixel = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
+    api.push(route.request().url());
+    return route.fulfill({ json: { query: { pages: [fixture] } } });
+  });
+  await page.route("https://thumb.wikimedia.org/**", (route) =>
+    route.fulfill({ contentType: "image/png", body: pixel }),
+  );
+  await page.route("https://upload.wikimedia.org/**", (route) => {
+    originals.push(route.request().url());
+    return route.fulfill({ contentType: "image/png", body: pixel });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
+  ).toBeVisible();
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "9000 × 6000px",
+  );
+  await expect(page.locator(".viewer-canvas img")).toHaveAttribute(
+    "src",
+    /^blob:/,
+  );
+  expect(originals).toContain("https://upload.wikimedia.org/original.jpg");
+  expect(api.every((url) => !url.includes("iiurlwidth=2400"))).toBe(true);
+  await page.getByRole("button", { name: "退出全屏" }).click();
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await page.getByLabel("界面主题").selectOption("dark");
+  await page.getByRole("button", { name: "保存偏好" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator(".sidebar")).toHaveCSS(
+    "background-color",
+    "rgb(34, 43, 37)",
+  );
+  await expect(page.locator(".prompt-card").first()).toHaveCSS(
+    "background-color",
+    "rgb(44, 55, 47)",
+  );
+  await page.screenshot({
+    path: "test-results/dark-theme.png",
+    fullPage: true,
+  });
 });

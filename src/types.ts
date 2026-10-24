@@ -50,6 +50,7 @@ export interface Settings {
   model: string;
   useAi: boolean;
   scope: "google" | "commons";
+  theme: "light" | "dark" | "system";
 }
 export interface Library {
   version: 1;
@@ -66,5 +67,6 @@ export const defaultLibrary: Library = {
     model: "gpt-4o-mini",
     useAi: false,
     scope: "google",
+    theme: "light",
   },
 };

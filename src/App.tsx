@@ -248,6 +248,12 @@ export default function App() {
   const [saving, setSaving] = useState<number[]>([]);
   const [detail, setDetail] = useState<Artwork | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const viewerFromDetail = useRef(false);
+  const [viewerOriginal, setViewerOriginal] = useState<Record<number, string>>(
+    {},
+  );
+  const [viewerLoadingId, setViewerLoadingId] = useState<number | null>(null);
+  const [viewerErrorId, setViewerErrorId] = useState<number | null>(null);
   const browserFullscreen = useRef(false);
   const [hd, setHd] = useState<Record<number, string>>({});
   const [hdBusy, setHdBusy] = useState(false);
@@ -272,6 +278,20 @@ export default function App() {
     return () => request.current?.abort();
   }, []);
   useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      document.documentElement.dataset.theme =
+        library.settings.theme === "system"
+          ? media.matches
+            ? "dark"
+            : "light"
+          : library.settings.theme;
+    };
+    applyTheme();
+    media.addEventListener("change", applyTheme);
+    return () => media.removeEventListener("change", applyTheme);
+  }, [library.settings.theme]);
+  useEffect(() => {
     if (ready)
       writeLibrary(library).catch((e) => setPersistError(errorText(e)));
   }, [library, ready]);
@@ -293,6 +313,7 @@ export default function App() {
   }, []);
   const closeViewer = useCallback(() => {
     setViewerOpen(false);
+    if (!viewerFromDetail.current) setDetail(null);
     if (desktop)
       void getCurrentWindow()
         .setFullscreen(false)
@@ -309,7 +330,31 @@ export default function App() {
     document.addEventListener("fullscreenchange", changed);
     return () => document.removeEventListener("fullscreenchange", changed);
   }, [closeViewer]);
-  function openViewer(art: Artwork) {
+  async function loadOriginalForViewer(art: Artwork) {
+    const saved = savedFor(art.id);
+    if (
+      viewerOriginal[art.id] ||
+      (saved &&
+        (saved.local.includes("-original.") ||
+          saved.local.endsWith(":original")))
+    )
+      return;
+    setViewerLoadingId(art.id);
+    setViewerErrorId(null);
+    try {
+      const local = await cacheArtwork(art.id, art.original, "original");
+      setViewerOriginal((current) => ({ ...current, [art.id]: local }));
+    } catch (error) {
+      setViewerErrorId(art.id);
+      setToast(`原图加载失败：${errorText(error)}`);
+    } finally {
+      setViewerLoadingId((current) => (current === art.id ? null : current));
+    }
+  }
+  function openViewer(art: Artwork, fromDetail = false) {
+    viewerFromDetail.current = fromDetail;
+    setDetail(art);
+    setContext(null);
     setViewerOpen(true);
     if (desktop)
       void getCurrentWindow()
@@ -322,7 +367,7 @@ export default function App() {
           browserFullscreen.current = true;
         })
         .catch(() => {});
-    if (!savedFor(art.id) && !hd[art.id] && !hdBusy) void loadHd(art);
+    void loadOriginalForViewer(art);
   }
   useEffect(() => {
     if (!desktop) return;
@@ -865,7 +910,7 @@ export default function App() {
             art={art}
             saved={savedFor(art.id)}
             pending={saving.includes(art.id)}
-            onOpen={() => setDetail(art)}
+            onOpen={() => openViewer(art)}
             onSave={() => void save(art)}
             onContext={(x, y) =>
               setContext({
@@ -1642,7 +1687,7 @@ export default function App() {
           >
             <button
               className="fullscreen-button"
-              onClick={() => openViewer(detail)}
+              onClick={() => openViewer(detail, true)}
               aria-label="全屏欣赏"
             >
               <Maximize2 size={17} />
@@ -1655,7 +1700,19 @@ export default function App() {
             >
               <X />
             </button>
-            <div className="detail-canvas">
+            <div
+              className="detail-canvas"
+              role="button"
+              tabIndex={0}
+              aria-label={`全屏欣赏 ${detail.title}`}
+              onClick={() => openViewer(detail, true)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  openViewer(detail, true);
+                }
+              }}
+            >
               {hd[detail.id] &&
               !(
                 savedFor(detail.id)?.local.includes("-original.") ||
@@ -1736,15 +1793,9 @@ export default function App() {
               </button>
               <button
                 className="secondary-button"
-                onClick={() => void loadHd(detail)}
-                disabled={hdBusy}
+                onClick={() => openViewer(detail, true)}
               >
-                {hdBusy ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : (
-                  <ArrowDownToLine size={16} />
-                )}
-                加载更高分辨率
+                <Maximize2 size={16} /> 全屏查看原始分辨率
               </button>
               <a
                 className="source-link"
@@ -1769,15 +1820,16 @@ export default function App() {
       {viewerOpen && detail && (
         <FullscreenViewer
           art={detail}
-          saved={savedFor(detail.id)}
-          highUrl={
+          saved={
             savedFor(detail.id)?.local.includes("-original.") ||
             savedFor(detail.id)?.local.endsWith(":original")
-              ? undefined
-              : hd[detail.id]
+              ? savedFor(detail.id)
+              : undefined
           }
-          loadingHigh={hdBusy}
-          onLoadHigh={() => void loadHd(detail)}
+          originalLocal={viewerOriginal[detail.id]}
+          loadingOriginal={viewerLoadingId === detail.id}
+          originalError={viewerErrorId === detail.id}
+          onLoadOriginal={() => void loadOriginalForViewer(detail)}
           onClose={closeViewer}
         />
       )}
@@ -2078,6 +2130,22 @@ function SettingsDialog({
               >
                 <option value="google">Google Art Project（默认）</option>
                 <option value="commons">全部 Wikimedia Commons</option>
+              </select>
+            </label>
+            <label>
+              界面主题
+              <select
+                value={draft.theme}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    theme: event.target.value as Settings["theme"],
+                  })
+                }
+              >
+                <option value="light">浅色 · 展厅日光</option>
+                <option value="dark">深色 · 夜间观画</option>
+                <option value="system">跟随系统</option>
               </select>
             </label>
             <p className="field-hint">

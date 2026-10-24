@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 use std::{fs, path::{Path, PathBuf}, sync::Mutex, time::Duration};
 use tauri::{Manager, State};
 use serde_json::{Value, json};

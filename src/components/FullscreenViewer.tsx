@@ -16,19 +16,21 @@ const clamp = (value: number) => Math.min(16, Math.max(1, value));
 export default function FullscreenViewer({
   art,
   saved,
-  highUrl,
-  loadingHigh,
-  onLoadHigh,
+  originalLocal,
+  loadingOriginal,
+  originalError,
+  onLoadOriginal,
   onClose,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
-  highUrl?: string;
-  loadingHigh: boolean;
-  onLoadHigh: () => void;
+  originalLocal?: string;
+  loadingOriginal: boolean;
+  originalError: boolean;
+  onLoadOriginal: () => void;
   onClose: () => void;
 }) {
-  const [src, setSrc] = useState(highUrl || (saved ? "" : art.thumb));
+  const [src, setSrc] = useState(originalLocal || saved ? "" : art.thumb);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const canvas = useRef<HTMLDivElement>(null);
@@ -38,9 +40,9 @@ export default function FullscreenViewer({
   useEffect(() => {
     let alive = true;
     let objectUrl = "";
-    if (highUrl) setSrc(highUrl);
-    else if (saved)
-      localImage(saved.local)
+    const local = originalLocal || saved?.local;
+    if (local)
+      localImage(local)
         .then((url) => {
           objectUrl = url;
           if (alive) setSrc(url);
@@ -53,7 +55,7 @@ export default function FullscreenViewer({
       alive = false;
       if (objectUrl.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
     };
-  }, [art.id, art.thumb, saved?.local, highUrl]);
+  }, [art.id, art.thumb, saved?.local, originalLocal]);
 
   useEffect(() => {
     close.current?.focus();
@@ -86,7 +88,6 @@ export default function FullscreenViewer({
     const element = canvas.current;
     if (!element) return;
     const wheel = (event: WheelEvent) => {
-      if (!event.ctrlKey) return;
       event.preventDefault();
       const rect = element.getBoundingClientRect();
       const x = event.clientX - rect.left - rect.width / 2;
@@ -125,19 +126,30 @@ export default function FullscreenViewer({
           <span>{art.artist}</span>
         </div>
         <div className="viewer-actions">
-          {!highUrl && !saved && (
+          {!originalLocal && !saved && (
             <button
-              onClick={onLoadHigh}
-              disabled={loadingHigh}
-              title="加载 2400px 高清预览"
+              onClick={onLoadOriginal}
+              disabled={loadingOriginal}
+              title="加载 Wikimedia 原始分辨率"
             >
-              {loadingHigh ? (
+              {loadingOriginal ? (
                 <LoaderCircle className="spin" size={17} />
               ) : (
                 <ArrowDownToLine size={17} />
               )}
-              <span>高清预览</span>
+              <span>
+                {loadingOriginal
+                  ? "原图下载中"
+                  : originalError
+                    ? "重试原图"
+                    : "加载原图"}
+              </span>
             </button>
+          )}
+          {(originalLocal || saved) && (
+            <span className="viewer-resolution">
+              原图 · {art.width} × {art.height}px
+            </span>
           )}
           <button onClick={() => zoom(1 / 1.25)} aria-label="缩小">
             <Minus size={17} />
@@ -168,9 +180,9 @@ export default function FullscreenViewer({
       </div>
       <div
         ref={canvas}
-        className={`viewer-canvas ${scale > 1 ? "can-pan" : ""}`}
+        className="viewer-canvas"
         onPointerDown={(event) => {
-          if (event.button !== 0 || (scale <= 1 && !event.ctrlKey)) return;
+          if (event.button !== 0) return;
           event.preventDefault();
           drag.current = { x: event.clientX, y: event.clientY };
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -202,9 +214,7 @@ export default function FullscreenViewer({
           <div className="viewer-loading">正在打开画作…</div>
         )}
       </div>
-      <div className="viewer-hint">
-        Ctrl + 滚轮缩放 · Ctrl + 左键拖动画作 · Esc 退出
-      </div>
+      <div className="viewer-hint">滚轮缩放 · 左键拖动画作 · Esc 退出</div>
     </div>,
     document.body,
   );

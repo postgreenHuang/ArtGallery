@@ -1236,6 +1236,14 @@ main {
   color: #cbd5c3;
   text-align: center;
 }
+.viewer-resolution {
+  font:
+    10px Georgia,
+    serif;
+  color: #b8c5b1;
+  white-space: nowrap;
+  padding: 0 8px;
+}
 .viewer-canvas {
   flex: 1;
   min-height: 0;
@@ -1246,11 +1254,9 @@ main {
   overflow: hidden;
   touch-action: none;
   background: radial-gradient(circle at center, #2c322b, #181c18);
-}
-.viewer-canvas.can-pan {
   cursor: grab;
 }
-.viewer-canvas.can-pan:active {
+.viewer-canvas:active {
   cursor: grabbing;
 }
 .viewer-canvas img {
@@ -1296,6 +1302,7 @@ main {
   align-items: center;
   justify-content: center;
   gap: 25px;
+  cursor: zoom-in;
 }
 .detail-canvas > img {
   max-width: 100%;
@@ -1829,4 +1836,208 @@ main {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #1b211e;
+  --ink: #e9e8df;
+  --muted: #a8b2a5;
+  --green: #566f55;
+  --border: #3c473e;
+  background: var(--paper);
+  color: var(--ink);
+}
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .app-shell,
+:root[data-theme="dark"] main {
+  background: var(--paper);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .sidebar {
+  background: #222b25;
+  border-color: var(--border);
+}
+:root[data-theme="dark"] .brand-mark,
+:root[data-theme="dark"] .brand-mark:after {
+  border-color: #95aa8d;
+  color: #b9cbaa;
+}
+:root[data-theme="dark"] .sidebar-intro,
+:root[data-theme="dark"] .sidebar-section,
+:root[data-theme="dark"] .recent-list > p,
+:root[data-theme="dark"] .local-label,
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .breadcrumb,
+:root[data-theme="dark"] .source-chip,
+:root[data-theme="dark"] .hero p,
+:root[data-theme="dark"] .page-heading p,
+:root[data-theme="dark"] .chat-heading p,
+:root[data-theme="dark"] .composer-footer,
+:root[data-theme="dark"] .art-caption p,
+:root[data-theme="dark"] .art-meta,
+:root[data-theme="dark"] .page-footer {
+  color: #a4afa2;
+}
+:root[data-theme="dark"] .sidebar nav button,
+:root[data-theme="dark"] .recent-list button,
+:root[data-theme="dark"] .settings-nav {
+  color: #b7c4b3;
+}
+:root[data-theme="dark"] .sidebar nav button.active,
+:root[data-theme="dark"] .sidebar nav button:hover,
+:root[data-theme="dark"] .recent-list button:hover,
+:root[data-theme="dark"] .recent-list .selected,
+:root[data-theme="dark"] .icon-button:hover {
+  background: #354237;
+  color: #e9e8df;
+}
+:root[data-theme="dark"] .sidebar-section,
+:root[data-theme="dark"] .settings-nav,
+:root[data-theme="dark"] .topbar {
+  border-color: var(--border);
+}
+:root[data-theme="dark"] .new-chat,
+:root[data-theme="dark"] .send-button,
+:root[data-theme="dark"] .primary-button {
+  background: #577351;
+  color: #f7f8f2;
+}
+:root[data-theme="dark"] .new-chat:hover,
+:root[data-theme="dark"] .send-button:hover,
+:root[data-theme="dark"] .primary-button:hover {
+  background: #6e8c65;
+}
+:root[data-theme="dark"] .eyebrow,
+:root[data-theme="dark"] .hero h1 span,
+:root[data-theme="dark"] .hero h1 i,
+:root[data-theme="dark"] .hero-annotation > span,
+:root[data-theme="dark"] .tiny-sun,
+:root[data-theme="dark"] .big-sun,
+:root[data-theme="dark"] .curator-label,
+:root[data-theme="dark"] .text-button,
+:root[data-theme="dark"] .query-label,
+:root[data-theme="dark"] .source-link {
+  color: #a9c09c;
+}
+:root[data-theme="dark"] .composer,
+:root[data-theme="dark"] .context-menu,
+:root[data-theme="dark"] .settings-dialog,
+:root[data-theme="dark"] .confirm-dialog,
+:root[data-theme="dark"] .art-detail {
+  background: #262e28;
+  color: var(--ink);
+  border-color: var(--border);
+}
+:root[data-theme="dark"] .composer textarea,
+:root[data-theme="dark"] .filter input {
+  color: var(--ink);
+}
+:root[data-theme="dark"] .composer textarea::placeholder,
+:root[data-theme="dark"] .filter input::placeholder {
+  color: #879685;
+}
+:root[data-theme="dark"] .prompt-card,
+:root[data-theme="dark"] .prompt-card.ochre,
+:root[data-theme="dark"] .prompt-card.blue,
+:root[data-theme="dark"] .history-tabs button,
+:root[data-theme="dark"] .empty-state,
+:root[data-theme="dark"] .artwork-chat-context,
+:root[data-theme="dark"] .artist-suggestions button,
+:root[data-theme="dark"] .folder-path,
+:root[data-theme="dark"] .sync-note,
+:root[data-theme="dark"] .notice {
+  background: #2c372f;
+  border-color: #465449;
+  color: #e0e5d9;
+}
+:root[data-theme="dark"] .prompt-card.ochre {
+  background: #39352d;
+}
+:root[data-theme="dark"] .prompt-card.blue {
+  background: #2d3a38;
+}
+:root[data-theme="dark"] .prompt-card:disabled {
+  opacity: 0.72;
+}
+:root[data-theme="dark"] .history-tabs button.active,
+:root[data-theme="dark"] .artwork-chat-context:hover,
+:root[data-theme="dark"] .artist-suggestions button:hover,
+:root[data-theme="dark"] .context-menu button:hover,
+:root[data-theme="dark"] .context-menu a:hover {
+  background: #3b4d3d;
+  color: #f1f3e9;
+}
+:root[data-theme="dark"] .art-open,
+:root[data-theme="dark"] .art-image,
+:root[data-theme="dark"] .art-card:nth-child(3n + 2) .art-image,
+:root[data-theme="dark"] .art-card:nth-child(3n + 3) .art-image,
+:root[data-theme="dark"] .detail-canvas {
+  background: #303730;
+}
+:root[data-theme="dark"] .view-art,
+:root[data-theme="dark"] .fullscreen-button,
+:root[data-theme="dark"] .close-button {
+  background: #29362bdc;
+  color: #e5ebdc;
+}
+:root[data-theme="dark"] .chat-composer {
+  background: linear-gradient(transparent, #1b211e 25%);
+}
+:root[data-theme="dark"] .message.user p {
+  background: #364837;
+  color: #f0f2e9;
+}
+:root[data-theme="dark"] .message-text,
+:root[data-theme="dark"] .detail-info p,
+:root[data-theme="dark"] .detail-info dd,
+:root[data-theme="dark"] .description,
+:root[data-theme="dark"] .artwork-chat-context strong,
+:root[data-theme="dark"] .artist-suggestions strong,
+:root[data-theme="dark"] .history-list h3 {
+  color: #dce6d6;
+}
+:root[data-theme="dark"] .detail-artist {
+  color: #b8d2a8 !important;
+}
+:root[data-theme="dark"] .settings-dialog label,
+:root[data-theme="dark"] .detail-info dt,
+:root[data-theme="dark"] .field-hint,
+:root[data-theme="dark"] .library-settings > p,
+:root[data-theme="dark"] .sync-note p,
+:root[data-theme="dark"] .sync-note small,
+:root[data-theme="dark"] .artist-suggestions small,
+:root[data-theme="dark"] .artist-suggestions .suggestion-reason,
+:root[data-theme="dark"] .artwork-chat-context em,
+:root[data-theme="dark"] .toggle-label small {
+  color: #adbcaa;
+}
+:root[data-theme="dark"] .settings-dialog input:not([type="checkbox"]),
+:root[data-theme="dark"] .settings-dialog select {
+  background: #1d2620;
+  border-color: #4a594b;
+  color: #ecf0e7;
+}
+:root[data-theme="dark"] .secondary-button,
+:root[data-theme="dark"] .load-more,
+:root[data-theme="dark"] .empty-state button,
+:root[data-theme="dark"] .chat-welcome button {
+  border-color: #536454;
+  color: #c2d4ba;
+}
+:root[data-theme="dark"] .secondary-button:hover {
+  background: #344537;
+}
+:root[data-theme="dark"] .message-error,
+:root[data-theme="dark"] .inline-error,
+:root[data-theme="dark"] .error-banner {
+  background: #48342e;
+  color: #e6b8a4;
+}
+:root[data-theme="dark"] .message-error .message-text {
+  color: #e6b8a4;
+}
+:root[data-theme="dark"] .skeleton {
+  background: linear-gradient(100deg, #2d352f 25%, #39453a 45%, #2d352f 65%);
+  background-size: 300% 100%;
 }
