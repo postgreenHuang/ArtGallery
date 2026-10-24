@@ -63,6 +63,10 @@ export async function cacheArtwork(
       variant === "original" || variant === "collection" ? 300000 : 45000,
     ),
   });
+  if (response.status === 429)
+    throw new Error(
+      "Wikimedia 暂时限制下载（HTTP 429），请稍后重试；已下载的本地作品仍可查看。",
+    );
   if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
   if (Number(response.headers.get("content-length") || 0) > 512 * 1024 * 1024)
     throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");

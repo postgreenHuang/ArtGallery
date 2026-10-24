@@ -1,5 +1,5 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
-use std::{collections::HashSet, fs, path::{Path, PathBuf}, sync::Mutex, time::Duration};
+use std::{collections::HashSet, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
 use tauri::{Manager, State};
 use serde_json::{Value, json};
 use fs2::FileExt;
@@ -7,8 +7,20 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::io::AsyncWriteExt;
 
 struct LibraryState { root: PathBuf, last: Option<String> }
-struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore }
+struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>> }
 fn err(e: impl std::fmt::Display) -> String { e.to_string() }
+fn check_original_cooldown(state:&AppState)->Result<(),String>{
+    let until=state.original_cooldown.lock().map_err(err)?;
+    if let Some(remaining)=until.and_then(|deadline|deadline.checked_duration_since(Instant::now())) {
+        return Err(format!("Wikimedia 暂时限制请求，请约 {} 分钟后再试；已下载的本地作品仍可查看。",remaining.as_secs().div_ceil(60).max(1)))
+    }
+    Ok(())
+}
+fn note_original_rate_limit(state:&AppState,response:&reqwest::Response)->String{
+    let seconds=response.headers().get(reqwest::header::RETRY_AFTER).and_then(|header|header.to_str().ok()).and_then(|value|value.parse::<u64>().ok()).unwrap_or(300).clamp(60,3600);
+    if let Ok(mut until)=state.original_cooldown.lock(){*until=Some(Instant::now()+Duration::from_secs(seconds));}
+    format!("Wikimedia 暂时限制下载（HTTP 429）。请约 {} 分钟后重试；原图未下载成功，已保存的本地作品不受影响。",seconds.div_ceil(60))
+}
 fn read_optional(path: &Path) -> Result<Option<String>,String> { match fs::read_to_string(path) {Ok(s)=>Ok(Some(s)),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(err(e))} }
 fn atomic_write(path:&Path, data:&[u8]) -> Result<(),String> {
     let temp=path.with_extension(format!("tmp-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_nanos()));
@@ -74,7 +86,9 @@ fn image_url(url:&str)->Result<reqwest::Url,String>{let u=reqwest::Url::parse(ur
 async fn commons_query(query:String,state:State<'_,AppState>)->Result<Value,String>{
     let mut url=reqwest::Url::parse("https://commons.wikimedia.org/w/api.php").unwrap();url.set_query(Some(&query));
     if url.query_pairs().any(|(k,v)|k=="action"&&v!="query"){return Err("仅允许查询接口".into())}
-    state.client.get(url).send().await.map_err(err)?.error_for_status().map_err(err)?.json().await.map_err(err)
+    let response=state.client.get(url).send().await.map_err(err)?;
+    if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{return Err("Wikimedia 查询暂时受限（HTTP 429），请稍后刷新。".into())}
+    response.error_for_status().map_err(err)?.json().await.map_err(err)
 }
 #[tauri::command]
 async fn cache_image(id:u64,url:String,variant:String,state:State<'_,AppState>)->Result<String,String>{
@@ -95,7 +109,12 @@ async fn cache_image(id:u64,url:String,variant:String,state:State<'_,AppState>)-
         let source=root.join(format!("images/{id}{suffix}.{ext}"));
         if source.is_file(){let relative=format!("{directory}/{id}.{ext}");fs::create_dir_all(root.join(directory)).map_err(err)?;fs::copy(source,root.join(&relative)).map_err(err)?;return Ok(relative)}
     }}
-    let mut response=state.client.get(validated).timeout(Duration::from_secs(if variant=="original"||variant=="collection"{300}else{45})).send().await.map_err(err)?.error_for_status().map_err(err)?;
+    if variant=="original"||variant=="collection"{check_original_cooldown(&state)?;}
+    let response=state.client.get(validated).timeout(Duration::from_secs(if variant=="original"||variant=="collection"{300}else{45})).send().await.map_err(err)?;
+    if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{
+        return Err(if variant=="original"||variant=="collection"{note_original_rate_limit(&state,&response)}else{"Wikimedia 缩略图暂时受限（HTTP 429），请稍后重试。".into()})
+    }
+    let mut response=response.error_for_status().map_err(err)?;
     let ext=match response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or(""){"image/jpeg"=>"jpg","image/png"=>"png","image/webp"=>"webp",_=>return Err("不支持的图片类型".into())};
     fs::create_dir_all(root.join(directory)).map_err(err)?;let relative=format!("{directory}/{name}.{ext}");
     let limit=if variant=="original"||variant=="collection"{512_u64*1024*1024}else{32_u64*1024*1024};
@@ -188,11 +207,19 @@ fn main(){tauri::Builder::default().plugin(tauri_plugin_opener::init()).setup(|a
     let root:PathBuf=if pointer.exists(){let root:PathBuf=serde_json::from_str(&fs::read_to_string(pointer)?)?;if !root.is_dir(){return Err(format!("资料库目录不可用，请等待同步或恢复该目录：{}",root.display()).into())}root}else{app.path().app_data_dir()?.join("Library")};
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
-    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(3)});Ok(())
+    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),original_cooldown:Mutex::new(None)});Ok(())
 }).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
 
 #[cfg(test)]
 mod tests {use super::*;
+    #[test]fn original_rate_limit_waits_without_blocking_local_reads(){
+        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None)};
+        assert!(check_original_cooldown(&state).is_ok());
+        *state.original_cooldown.lock().unwrap()=Some(Instant::now()+Duration::from_secs(90));
+        assert!(check_original_cooldown(&state).unwrap_err().contains("2 分钟"));
+        *state.original_cooldown.lock().unwrap()=Some(Instant::now()-Duration::from_secs(1));
+        assert!(check_original_cooldown(&state).is_ok());
+    }
     #[test]fn native_asset_path_omits_windows_device_prefix(){assert_eq!(webview_path(std::path::Path::new(r"\\?\D:\Gallery\images\1.jpg")),r"D:\Gallery\images\1.jpg");assert_eq!(webview_path(std::path::Path::new(r"\\?\UNC\server\Gallery\1.jpg")),r"\\server\Gallery\1.jpg");}
     #[test]fn reject_untrusted_images(){assert!(image_url("https://upload.wikimedia.org/a.jpg").is_ok());assert!(image_url("https://upload.wikimedia.org.evil.test/a").is_err());assert!(image_url("file:///etc/passwd").is_err());}
     #[test]fn endpoint_security(){assert!(endpoint("https://example.com/v1").is_ok());assert!(endpoint("http://127.0.0.1:11434/v1").is_ok());assert!(endpoint("http://example.com/v1").is_err());assert!(endpoint("https://user:secret@example.com").is_err());}

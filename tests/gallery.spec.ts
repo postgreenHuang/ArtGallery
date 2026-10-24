@@ -19,6 +19,120 @@ const fixture = {
     },
   ],
 };
+test("discovery refresh rotates artists and similar opens a seeded inspiration chat", async ({
+  page,
+}) => {
+  const names = [
+    "Claude Monet",
+    "Paul Cezanne",
+    "Berthe Morisot",
+    "Sandro Botticelli",
+    "Albrecht Durer",
+    "Leonardo da Vinci",
+    "Rembrandt",
+    "Johannes Vermeer",
+    "Diego Velazquez",
+    "Francisco Goya",
+    "Canaletto",
+    "Katsushika Hokusai",
+    "Wassily Kandinsky",
+    "Gustav Klimt",
+    "Edvard Munch",
+  ];
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
+    const query =
+      new URL(route.request().url()).searchParams.get("gsrsearch") || "";
+    const name = names.find((item) => query.startsWith(item)) || "Claude Monet";
+    const id = names.indexOf(name) + 1;
+    return route.fulfill({
+      json: {
+        query: {
+          pages: [
+            {
+              ...fixture,
+              pageid: id,
+              title: `File:${name}.jpg`,
+              imageinfo: [
+                {
+                  ...fixture.imageinfo[0],
+                  url: `https://upload.wikimedia.org/${id}.jpg`,
+                  thumburl: `https://thumb.wikimedia.org/${id}.jpg`,
+                  extmetadata: {
+                    ...fixture.imageinfo[0].extmetadata,
+                    ObjectName: { value: `${name} painting` },
+                    Artist: { value: name },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+  });
+  await page.route("https://thumb.wikimedia.org/**", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    }),
+  );
+  await page.goto("/");
+  await expect(page.locator(".collection-section .art-card")).toHaveCount(5);
+  const first = await page
+    .locator(".collection-section .art-caption p")
+    .allTextContents();
+  expect(new Set(first).size).toBe(5);
+  await page.getByRole("button", { name: "换一组画作" }).click();
+  await expect
+    .poll(async () =>
+      page.locator(".collection-section .art-caption p").allTextContents(),
+    )
+    .not.toEqual(first);
+  const second = await page
+    .locator(".collection-section .art-caption p")
+    .allTextContents();
+  expect(second.every((artist) => !first.includes(artist))).toBe(true);
+  await page.getByRole("button", { name: "查看相似" }).first().click();
+  await expect(
+    page.getByText("为参照，比较艺术风格", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("请在偏好中开启 AI", { exact: false }),
+  ).toBeVisible();
+});
+test("original download rate limit explains retry while thumbnails stay visible", async ({
+  page,
+}) => {
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) =>
+    route.fulfill({ json: { query: { pages: [fixture] } } }),
+  );
+  await page.route("https://thumb.wikimedia.org/**", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    }),
+  );
+  await page.route("https://upload.wikimedia.org/**", (route) =>
+    route.fulfill({ status: 429, body: "Too many requests" }),
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Water lilies" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "加入画架", exact: true }).click();
+  await expect(
+    page.getByText("Wikimedia 暂时限制下载（HTTP 429）", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".collection-section .art-image img"),
+  ).toBeVisible();
+});
 test("search, thumbnail-first, collect, reload offline, history and settings", async ({
   page,
 }) => {

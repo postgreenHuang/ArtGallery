@@ -21,6 +21,7 @@ import {
   MessageCircle,
   MoreHorizontal,
   Plus,
+  RefreshCw,
   Search,
   Settings2,
   Sparkles,
@@ -51,6 +52,7 @@ import {
 } from "./services/storage";
 
 import { highResolution, searchArt } from "./services/commons";
+import { discoverArt } from "./services/discovery";
 import {
   explainArtwork,
   isRecommendationRequest,
@@ -154,6 +156,7 @@ function ArtCard({
   onOpen,
   onSave,
   onContext,
+  onSimilar,
   pending,
 }: {
   art: Artwork;
@@ -161,6 +164,7 @@ function ArtCard({
   onOpen: () => void;
   onSave: () => void;
   onContext: (x: number, y: number) => void;
+  onSimilar?: () => void;
   pending: boolean;
 }) {
   const originalSaved = isOriginalLocal(saved?.local);
@@ -216,6 +220,11 @@ function ArtCard({
       <div className="art-meta">
         <span>{art.date.slice(0, 38)}</span>
         <span>{art.license}</span>
+        {onSimilar && (
+          <button className="similar-button" onClick={onSimilar}>
+            <Sparkles size={13} /> 查看相似
+          </button>
+        )}
         <button
           className="icon-button"
           aria-label={`更多操作 ${art.title}`}
@@ -249,6 +258,8 @@ export default function App() {
   const [discover, setDiscover] = useState<Artwork[]>([]);
   const [discoverLoading, setDiscoverLoading] = useState(true);
   const [discoverError, setDiscoverError] = useState("");
+  const discoverRequest = useRef<AbortController | null>(null);
+  const discoverArtists = useRef<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState("");
   const request = useRef<AbortController | null>(null);
@@ -428,19 +439,36 @@ export default function App() {
   }, [current?.messages.length, busy, view]);
   useEffect(() => {
     if (!ready) return;
+    void refreshDiscovery();
+    return () => discoverRequest.current?.abort();
+  }, [ready, library.settings.scope]);
+  async function refreshDiscovery() {
+    discoverRequest.current?.abort();
     const controller = new AbortController();
+    discoverRequest.current = controller;
     setDiscoverLoading(true);
     setDiscoverError("");
-    searchArt("Claude Monet", library.settings.scope, 0, controller.signal)
-      .then((r) => setDiscover(r.artworks))
-      .catch((e) => {
-        if (!controller.signal.aborted) setDiscoverError(errorText(e));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setDiscoverLoading(false);
-      });
-    return () => controller.abort();
-  }, [ready, library.settings.scope]);
+    try {
+      const result = await discoverArt(
+        library.settings.scope,
+        discoverArtists.current,
+        discover.map((art) => art.id),
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (!result.artworks.length) {
+        setDiscoverError("这组画家暂时没有可展示的作品，请再刷新一次。");
+      } else {
+        discoverArtists.current = result.artists;
+        setDiscover(result.artworks);
+        setDiscoverError(result.warning);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setDiscoverError(errorText(error));
+    } finally {
+      if (!controller.signal.aborted) setDiscoverLoading(false);
+    }
+  }
   const savedFor = (id: number) =>
     library.saved.find((s) => s.artwork.id === id);
   function updateConversation(
@@ -557,10 +585,11 @@ export default function App() {
   async function send(
     value = input,
     chosen?: { query: string; scope?: Settings["scope"] },
+    similarTo?: Artwork,
   ) {
     const text = value.trim();
     if (!text || busy || !ready) return;
-    if (view === "chat" && current?.kind === "artwork")
+    if (!similarTo && view === "chat" && current?.kind === "artwork")
       return sendArtwork(text);
     setInput("");
     setView("chat");
@@ -570,9 +599,22 @@ export default function App() {
     );
     const controller = new AbortController();
     request.current = controller;
-    const continueExisting = !!active && current?.kind !== "artwork";
+    const continueExisting =
+      !similarTo && !!active && current?.kind !== "artwork";
     const id = continueExisting ? active! : crypto.randomUUID();
-    const history = continueExisting ? current?.messages || [] : [];
+    const contextMessage: Message | null = similarTo
+      ? {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          text: `以《${similarTo.title}》（${similarTo.artist}，${similarTo.date}）为参照，比较艺术风格并寻找可核对的开放馆藏作品。`,
+          artworks: [similarTo],
+        }
+      : null;
+    const history = continueExisting
+      ? current?.messages || []
+      : contextMessage
+        ? [contextMessage]
+        : [];
     setActive(id);
     const user: Message = { id: crypto.randomUUID(), role: "user", text };
     if (!continueExisting)
@@ -583,7 +625,7 @@ export default function App() {
             id,
             title: text.slice(0, 40),
             updated: Date.now(),
-            messages: [user],
+            messages: [...history, user],
           },
           ...l.conversations,
         ],
@@ -897,7 +939,7 @@ export default function App() {
     setInput("");
     setFilter("");
   }
-  function cards(arts: Artwork[]) {
+  function cards(arts: Artwork[], showSimilar = false) {
     return (
       <div className="gallery-grid">
         {arts.map((art) => (
@@ -908,6 +950,16 @@ export default function App() {
             pending={saving.includes(art.id)}
             onOpen={() => openViewer(art)}
             onSave={() => void save(art)}
+            onSimilar={
+              showSimilar
+                ? () =>
+                    void send(
+                      `推荐与《${art.title}》风格相似的画作`,
+                      undefined,
+                      art,
+                    )
+                : undefined
+            }
             onContext={(x, y) =>
               setContext({
                 art,
@@ -1223,14 +1275,18 @@ export default function App() {
                   </div>
                   <button
                     className="text-button"
-                    disabled={busy}
-                    onClick={() => void send("推荐莫奈的画作")}
+                    disabled={discoverLoading}
+                    onClick={() => void refreshDiscovery()}
                   >
-                    探索更多 <ArrowRight size={16} />
+                    {discoverLoading ? "正在换一组" : "换一组画作"}{" "}
+                    <RefreshCw
+                      size={16}
+                      className={discoverLoading ? "spin" : ""}
+                    />
                   </button>
                 </div>
                 <div className="collection-toolbar">
-                  <span>光影之间 · 克劳德·莫奈</span>
+                  <span>跨越年代 · 每次遇见不同的画家</span>
                   <span>
                     {library.settings.scope === "google"
                       ? "GOOGLE ART PROJECT"
@@ -1238,34 +1294,31 @@ export default function App() {
                     <span className="middle-dot">·</span> 开放馆藏
                   </span>
                 </div>
-                {discoverLoading ? (
+                {discoverError && discover.length > 0 && (
+                  <div className="error-banner" role="alert">
+                    {discoverError}{" "}
+                    <button onClick={() => void refreshDiscovery()}>
+                      重试
+                    </button>
+                  </div>
+                )}
+                {discoverLoading && !discover.length ? (
                   <div className="skeleton-grid">
                     {[1, 2, 3].map((i) => (
                       <div className="skeleton" key={i} />
                     ))}
                   </div>
-                ) : discoverError ? (
+                ) : discoverError && !discover.length ? (
                   <div className="empty-state">
                     <ImageIcon />
                     <h3>馆藏正在远方</h3>
                     <p>{discoverError}</p>
-                    <button
-                      onClick={() => {
-                        setDiscoverLoading(true);
-                        searchArt("Claude Monet", library.settings.scope)
-                          .then((r) => {
-                            setDiscover(r.artworks);
-                            setDiscoverError("");
-                          })
-                          .catch((e) => setDiscoverError(errorText(e)))
-                          .finally(() => setDiscoverLoading(false));
-                      }}
-                    >
+                    <button onClick={() => void refreshDiscovery()}>
                       重新连接馆藏
                     </button>
                   </div>
                 ) : discover.length ? (
-                  cards(discover)
+                  cards(discover, true)
                 ) : (
                   <div className="empty-state">
                     暂未找到作品，试试开始一段对话。

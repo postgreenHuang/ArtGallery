@@ -550,6 +550,18 @@ main {
 .middle-dot {
   margin: 0 7px;
 }
+.similar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+  font-size: 10px;
+  white-space: nowrap;
+  padding: 5px 3px;
+}
+.similar-button:hover {
+  text-decoration: underline;
+}
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -683,6 +695,9 @@ main {
 }
 .art-meta button {
   margin-left: auto;
+}
+.art-meta .similar-button + button {
+  margin-left: 0;
 }
 .page-footer {
   display: flex;
@@ -1908,6 +1923,9 @@ main {
 :root[data-theme="dark"] .art-meta,
 :root[data-theme="dark"] .page-footer {
   color: #a4afa2;
+}
+:root[data-theme="dark"] .similar-button {
+  color: #bdd0b4;
 }
 :root[data-theme="dark"] .sidebar nav button,
 :root[data-theme="dark"] .recent-list button,
