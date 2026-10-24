@@ -1,0 +1,204 @@
+import { test, expect } from "@playwright/test";
+const fixture = {
+  pageid: 101,
+  title: "File:Water lilies.jpg",
+  index: 1,
+  imageinfo: [
+    {
+      url: "https://upload.wikimedia.org/original.jpg",
+      thumburl: "https://thumb.wikimedia.org/preview.jpg",
+      width: 9000,
+      height: 6000,
+      mime: "image/jpeg",
+      extmetadata: {
+        ObjectName: { value: "Water lilies" },
+        Artist: { value: "Claude Monet" },
+        DateTimeOriginal: { value: "1916" },
+        LicenseShortName: { value: "Public domain" },
+      },
+    },
+  ],
+};
+test("search, thumbnail-first, collect, reload offline, history and settings", async ({
+  page,
+}) => {
+  const requests: string[] = [];
+  const originals: string[] = [];
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
+    requests.push(route.request().url());
+    return route.fulfill({ json: { query: { pages: [fixture] } } });
+  });
+  await page.route("https://thumb.wikimedia.org/**", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    }),
+  );
+  await page.route("https://upload.wikimedia.org/**", (route) => {
+    originals.push(route.request().url());
+    return route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Water lilies", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "加入画架", exact: true }).click();
+  await expect(page.getByText("已收入画架 · 原图已保存在本地")).toBeVisible();
+  expect(originals).toContain("https://upload.wikimedia.org/original.jpg");
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Water lilies", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(page.locator(".art-image img")).toHaveAttribute("src", /^blob:/);
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page
+    .getByRole("textbox", { name: "向策展人描述想看的画作" })
+    .fill("莫奈的睡莲");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(
+    page.getByText("Claude Monet water lilies", { exact: false }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Water lilies", exact: true }),
+  ).toBeVisible();
+  expect(requests.every((url) => url.includes("iiurlwidth=640"))).toBe(true);
+  await page
+    .getByRole("button", { name: "欣赏 Water lilies" })
+    .click({ button: "right" });
+  await expect(
+    page.getByRole("button", { name: "加载高清 · 2400px" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "加载高清 · 2400px" }).click();
+  await expect(
+    page.getByText("本地原图 · 9000 × 6000 px", { exact: false }),
+  ).toBeVisible();
+  expect(requests.some((url) => url.includes("iiurlwidth=2400"))).toBe(true);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await page.getByRole("button", { name: "全屏欣赏" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1914, height: 1080 });
+  expect(
+    await page.locator(".fullscreen-viewer").evaluate((el) => ({
+      right: Math.round(el.getBoundingClientRect().right),
+      viewport: window.innerWidth,
+      parent: el.parentElement?.tagName,
+      overflow: document.documentElement.style.overflow,
+    })),
+  ).toEqual({
+    right: 1914,
+    viewport: 1914,
+    parent: "BODY",
+    overflow: "hidden",
+  });
+  const canvas = await page.locator(".viewer-canvas").boundingBox();
+  expect(canvas).not.toBeNull();
+  const centerX = canvas!.x + canvas!.width / 2;
+  const centerY = canvas!.y + canvas!.height / 2;
+  await page.keyboard.down("Control");
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 80, centerY + 40, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect
+    .poll(() =>
+      page
+        .locator(".viewer-canvas img")
+        .evaluate((el) => (el as HTMLElement).style.transform),
+    )
+    .toContain("translate(80px, 40px)");
+  await page.locator(".viewer-canvas").dispatchEvent("wheel", {
+    deltaY: -240,
+    ctrlKey: true,
+    clientX: 700,
+    clientY: 450,
+  });
+  await expect(page.locator(".viewer-scale")).not.toHaveText("100%");
+  await page.getByRole("button", { name: "退出全屏" }).click();
+  await page.getByRole("button", { name: "关闭作品详情" }).click();
+  await page
+    .getByRole("button", { name: "欣赏 Water lilies" })
+    .click({ button: "right" });
+  await page.getByRole("button", { name: "展开讲解对话" }).click();
+  await expect(
+    page.getByRole("heading", { name: "《Water lilies》的讲解" }),
+  ).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "向策展人描述想看的画作" })
+    .fill("画面用了什么技法？");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(
+    page.getByText("请先在偏好中开启 AI 并配置模型", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /往日对话/ }).click();
+  await page.getByRole("tab", { name: /作品讲解/ }).click();
+  await expect(page.locator(".history-list")).toContainText(
+    "《Water lilies》的讲解",
+  );
+  await page.reload();
+  await page.getByRole("button", { name: /往日对话/ }).click();
+  await page.getByRole("tab", { name: /作品讲解/ }).click();
+  await page.locator(".history-list article > button:first-child").click();
+  await expect(
+    page.getByText("画面用了什么技法？", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /往日对话/ }).click();
+  await page.getByRole("tab", { name: /灵感寻画/ }).click();
+  await expect(page.locator(".history-list")).toContainText("莫奈的睡莲");
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await page.getByRole("button", { name: "资料库与同步" }).click();
+  await expect(page.getByText("一个文件夹，带走你的美术馆。")).toBeVisible();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  await page.screenshot({ path: "test-results/history.png", fullPage: true });
+});
+test("network failure remains actionable", async ({ page }) => {
+  await page.route("https://commons.wikimedia.org/**", (r) =>
+    r.fulfill({ status: 503 }),
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "重新连接馆藏" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page
+    .getByRole("textbox", { name: "向策展人描述想看的画作" })
+    .fill("Monet");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(page.getByRole("button", { name: "重新尝试" })).toBeVisible();
+});
+test("similar-style request does not fall back to the named artist in direct mode", async ({
+  page,
+}) => {
+  const queries: string[] = [];
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
+    queries.push(route.request().url());
+    return route.fulfill({ json: { query: { pages: [] } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page
+    .getByRole("textbox", { name: "向策展人描述想看的画作" })
+    .fill("有没有类似希施金风格的作家推荐");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(
+    page.getByText("直接检索无法判断风格关联", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "开启 AI 风格推荐" }),
+  ).toBeVisible();
+  expect(queries.every((url) => !url.includes("Shishkin"))).toBe(true);
+});

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "拾色 Atelier",
+  "version": "0.1.0",
+  "identifier": "art.atelier.gallery",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "拾色 Atelier · 私人艺术画廊",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 900,
+        "minHeight": 650
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://upload.wikimedia.org https://thumb.wikimedia.org blob: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://commons.wikimedia.org https://upload.wikimedia.org https://thumb.wikimedia.org; font-src 'self' data:",
+      "assetProtocol": { "enable": true, "scope": [] }
+    }
+  },
+  "bundle": { "active": false }
+}
