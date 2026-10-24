@@ -299,6 +299,7 @@ export default function FullscreenViewer({
       const target = event.target;
       if (target instanceof HTMLElement && target.closest("input, select, textarea, [contenteditable=true]")) return;
       if (event.key === "Escape") {
+        event.preventDefault();
         event.stopPropagation();
         onClose();
       }

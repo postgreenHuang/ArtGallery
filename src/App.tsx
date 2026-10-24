@@ -53,6 +53,7 @@ import {
 
 import { highResolution, searchArt } from "./services/commons";
 import { discoverArt } from "./services/discovery";
+import { ViewerFullscreenController } from "./services/viewerFullscreen";
 import {
   artworkIntroductionPrompt,
   explainArtwork,
@@ -127,7 +128,7 @@ function ArtImage({
           if (alive) setSrc(url);
         })
         .catch(() => {
-          if (alive) setFailed(true);
+          if (alive) setSrc(art.thumb);
         });
     return () => {
       alive = false;
@@ -141,7 +142,10 @@ function ArtImage({
           src={src}
           alt={art.title}
           loading="lazy"
-          onError={() => setFailed(true)}
+          onError={() => {
+            if (src !== art.thumb) setSrc(art.thumb);
+            else setFailed(true);
+          }}
         />
       ) : (
         <div className="image-placeholder">
@@ -275,6 +279,7 @@ export default function App() {
   const [viewerArts, setViewerArts] = useState<Artwork[]>([]);
   const viewerFromDetail = useRef(false);
   const browserFullscreen = useRef(false);
+  const desktopFullscreen = useRef<ViewerFullscreenController | null>(null);
   const [hd, setHd] = useState<Record<number, string>>({});
   const [hdBusy, setHdBusy] = useState(false);
   const [toast, setToast] = useState("");
@@ -335,9 +340,7 @@ export default function App() {
     setViewerOpen(false);
     if (!viewerFromDetail.current) setDetail(null);
     if (desktop)
-      void getCurrentWindow()
-        .setFullscreen(false)
-        .catch(() => {});
+      void desktopFullscreen.current?.exit().catch(() => {});
     else if (document.fullscreenElement)
       void document.exitFullscreen().catch(() => {});
     browserFullscreen.current = false;
@@ -367,10 +370,10 @@ export default function App() {
     viewArtwork(art);
     setContext(null);
     setViewerOpen(true);
-    if (desktop)
-      void getCurrentWindow()
-        .setFullscreen(true)
-        .catch(() => {});
+    if (desktop) {
+      desktopFullscreen.current ??= new ViewerFullscreenController(getCurrentWindow());
+      void desktopFullscreen.current.enter().catch(() => {});
+    }
     else
       void document.documentElement
         .requestFullscreen()
