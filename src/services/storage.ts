@@ -1,5 +1,6 @@
 import { get, del, keys, set } from "idb-keyval";
 import { invoke, convertFileSrc, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { defaultLibrary, type Library } from "../types";
 export const desktop = isTauri();
 let writes = Promise.resolve();
@@ -31,21 +32,47 @@ export function writeLibrary(library: Library) {
   return next;
 }
 const downloads = new Map<string, Promise<string>>();
-export type ImageVariant = "preview" | "hd" | "original" | "collection";
+export type ImageVariant =
+  "preview" | "medium" | "hd" | "original" | "collection";
+export interface DownloadProgress {
+  id: number;
+  variant: ImageVariant;
+  received: number;
+  total: number | null;
+  speedBps: number;
+}
+export async function cachedArtwork(
+  id: number,
+  variant: Exclude<ImageVariant, "collection">,
+): Promise<string | null> {
+  if (desktop) return invoke<string | null>("cached_image", { id, variant });
+  return (await get<Blob>(`art-${id}:${variant}`))
+    ? `idb:${id}:${variant}`
+    : null;
+}
 export async function cacheArtwork(
   id: number,
   url: string,
   variant: ImageVariant = "preview",
+  onProgress?: (progress: DownloadProgress) => void,
 ): Promise<string> {
   if (desktop) {
     const cacheKey = `${id}-${variant}`;
     const pending = downloads.get(cacheKey);
     if (pending) return pending;
-    const download = invoke<string>("cache_image", {
-      id,
-      url,
-      variant,
-    }).finally(() => downloads.delete(cacheKey));
+    const download = (async () => {
+      const unlisten = onProgress
+        ? await listen<DownloadProgress>("image-download-progress", (event) => {
+            if (event.payload.id === id && event.payload.variant === variant)
+              onProgress(event.payload);
+          })
+        : null;
+      try {
+        return await invoke<string>("cache_image", { id, url, variant });
+      } finally {
+        unlisten?.();
+      }
+    })().finally(() => downloads.delete(cacheKey));
     downloads.set(cacheKey, download);
     return download;
   }
@@ -70,7 +97,45 @@ export async function cacheArtwork(
   if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
   if (Number(response.headers.get("content-length") || 0) > 512 * 1024 * 1024)
     throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");
-  const blob = await response.blob();
+  let blob: Blob;
+  if (onProgress && response.body) {
+    const reader = response.body.getReader();
+    const parts: Uint8Array<ArrayBuffer>[] = [];
+    const total = Number(response.headers.get("content-length")) || null;
+    let received = 0;
+    let previousBytes = 0;
+    let previousTime = performance.now();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > 512 * 1024 * 1024)
+          throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");
+        parts.push(value as Uint8Array<ArrayBuffer>);
+        const now = performance.now();
+        if (now - previousTime >= 200 || (total && received >= total)) {
+          onProgress({
+            id,
+            variant,
+            received,
+            total,
+            speedBps: Math.round(
+              ((received - previousBytes) * 1000) /
+                Math.max(now - previousTime, 1),
+            ),
+          });
+          previousBytes = received;
+          previousTime = now;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    blob = new Blob(parts, {
+      type: response.headers.get("content-type") || "",
+    });
+  } else blob = await response.blob();
   if (!blob.type.startsWith("image/")) throw new Error("下载内容不是图片");
   if (blob.size > 512 * 1024 * 1024)
     throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");
@@ -95,7 +160,7 @@ export async function clearTemporaryImages(savedLocals: string[]) {
   const cached = (await keys()).filter(
     (key): key is string =>
       typeof key === "string" &&
-      /^art-\d+(?::(?:preview|hd|original))?$/.test(key) &&
+      /^art-\d+(?::(?:preview|medium|hd|original))?$/.test(key) &&
       !keep.has(key),
   );
   let bytes = 0;

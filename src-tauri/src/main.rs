@@ -1,6 +1,6 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 use std::{collections::HashSet, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use serde_json::{Value, json};
 use fs2::FileExt;
 use tauri_plugin_opener::OpenerExt;
@@ -44,7 +44,7 @@ fn save_snapshot(s:&mut LibraryState,data:String)->Result<(),String>{
     if let Some(ref old)=current {atomic_write(&s.root.join("library.backup.json"),old.as_bytes())?;}
     atomic_write(&s.root.join("library.json"),data.as_bytes())?;s.last=Some(data);Ok(())
 }
-const IMAGE_DIRS: [&str; 5] = ["images", "cache/thumbnails", "cache/high-resolution", "cache/originals", "collection/originals"];
+const IMAGE_DIRS: [&str; 6] = ["images", "cache/thumbnails", "cache/medium-resolution", "cache/high-resolution", "cache/originals", "collection/originals"];
 fn copy_tree(source:&Path,target:&Path)->Result<(),String>{
     if !source.is_dir(){return Ok(())}
     fs::create_dir_all(target).map_err(err)?;
@@ -66,7 +66,7 @@ async fn choose_directory()->Result<Option<String>,String>{Ok(rfd::AsyncFileDial
 #[tauri::command]
 async fn switch_library(path:String,mode:String,app:tauri::AppHandle,state:State<'_,AppState>)->Result<(),String>{
     // Drain queued downloads before copying; newly queued downloads use the new root.
-    let _downloads=state.downloads.acquire_many(3).await.map_err(err)?;
+    let _downloads=state.downloads.acquire_many(2).await.map_err(err)?;
     let target=PathBuf::from(path);if !target.is_absolute()||!target.is_dir(){return Err("请选择已存在的文件夹".into())}
     let target=target.canonicalize().map_err(err)?;
     let mut s=state.library.lock().map_err(err)?;let old=s.root.canonicalize().map_err(err)?;
@@ -83,6 +83,13 @@ async fn switch_library(path:String,mode:String,app:tauri::AppHandle,state:State
 }
 fn image_url(url:&str)->Result<reqwest::Url,String>{let u=reqwest::Url::parse(url).map_err(err)?;if u.scheme()!="https"||!matches!(u.host_str(),Some("upload.wikimedia.org"|"thumb.wikimedia.org"))||!u.username().is_empty()||u.password().is_some(){return Err("只允许 Wikimedia 图片地址".into())}Ok(u)}
 #[tauri::command]
+fn cached_image(id:u64,variant:String,state:State<AppState>)->Result<Option<String>,String>{
+    let directory=match variant.as_str(){"preview"=>"cache/thumbnails","medium"=>"cache/medium-resolution","hd"=>"cache/high-resolution","original"=>"cache/originals",_=>return Err("无效图片版本".into())};
+    let root=state.library.lock().map_err(err)?.root.clone();
+    for ext in ["jpg","png","webp"]{let relative=format!("{directory}/{id}.{ext}");if root.join(&relative).is_file(){return Ok(Some(relative))}}
+    Ok(None)
+}
+#[tauri::command]
 async fn commons_query(query:String,state:State<'_,AppState>)->Result<Value,String>{
     let mut url=reqwest::Url::parse("https://commons.wikimedia.org/w/api.php").unwrap();url.set_query(Some(&query));
     if url.query_pairs().any(|(k,v)|k=="action"&&v!="query"){return Err("仅允许查询接口".into())}
@@ -91,9 +98,9 @@ async fn commons_query(query:String,state:State<'_,AppState>)->Result<Value,Stri
     response.error_for_status().map_err(err)?.json().await.map_err(err)
 }
 #[tauri::command]
-async fn cache_image(id:u64,url:String,variant:String,state:State<'_,AppState>)->Result<String,String>{
+async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state:State<'_,AppState>)->Result<String,String>{
     let validated=image_url(&url)?;
-    let (directory,suffix)=match variant.as_str(){"preview"=>("cache/thumbnails",""),"hd"=>("cache/high-resolution","-hd"),"original"=>("cache/originals","-original"),"collection"=>("collection/originals","-original"),_=>return Err("无效图片版本".into())};
+    let (directory,suffix)=match variant.as_str(){"preview"=>("cache/thumbnails",""),"medium"=>("cache/medium-resolution","-medium"),"hd"=>("cache/high-resolution","-hd"),"original"=>("cache/originals","-original"),"collection"=>("collection/originals","-original"),_=>return Err("无效图片版本".into())};
     let _permit=state.downloads.acquire().await.map_err(err)?;
     let root=state.library.lock().map_err(err)?.root.clone();
     let name=format!("{id}");
@@ -120,14 +127,24 @@ async fn cache_image(id:u64,url:String,variant:String,state:State<'_,AppState>)-
     let limit=if variant=="original"||variant=="collection"{512_u64*1024*1024}else{32_u64*1024*1024};
     if response.content_length().unwrap_or(0)>limit{return Err("图片超过下载大小限制，请从 Wikimedia 来源页查看".into())}
     let temporary=root.join(directory).join(format!(".{name}-{}-{}.partial",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_nanos()));
+    let total=response.content_length();
     let result:Result<String,String>=async {
         let mut file=tokio::fs::File::create(&temporary).await.map_err(err)?;
         let mut received=0_u64;
+        let mut last_emit=Instant::now();
+        let mut last_bytes=0_u64;
         while let Some(chunk)=response.chunk().await.map_err(err)?{
             received+=chunk.len() as u64;
             if received>limit{return Err("图片超过下载大小限制，请从 Wikimedia 来源页查看".into())}
             file.write_all(&chunk).await.map_err(err)?;
+            let elapsed=last_emit.elapsed();
+            if elapsed>=Duration::from_millis(200)||total.is_some_and(|size|received>=size){
+                let speed_bps=((received-last_bytes) as f64/elapsed.as_secs_f64().max(0.001)) as u64;
+                let _=app.emit("image-download-progress",json!({"id":id,"variant":variant,"received":received,"total":total,"speedBps":speed_bps}));
+                last_emit=Instant::now();last_bytes=received;
+            }
         }
+        let _=app.emit("image-download-progress",json!({"id":id,"variant":variant,"received":received,"total":total,"speedBps":0}));
         file.sync_all().await.map_err(err)?;
         drop(file);
         tokio::fs::rename(&temporary,root.join(&relative)).await.map_err(err)?;
@@ -160,7 +177,7 @@ fn clear_unreferenced(root:&Path,directory:&str,keep:&HashSet<String>)->Result<(
 }
 #[tauri::command]
 async fn clear_image_cache(state:State<'_,AppState>)->Result<Value,String>{
-    let _downloads=state.downloads.acquire_many(3).await.map_err(err)?;
+    let _downloads=state.downloads.acquire_many(2).await.map_err(err)?;
     let s=state.library.lock().map_err(err)?;
     let (files,bytes)=clear_cache_files(&s)?;
     Ok(json!({"files":files,"bytes":bytes}))
@@ -174,7 +191,7 @@ fn clear_cache_files(s:&LibraryState)->Result<(u64,u64),String>{
         keep.extend(saved["saved"].as_array().into_iter().flatten().filter_map(|item|item["local"].as_str().map(str::to_string)));
     }
     let mut files=0;let mut bytes=0;
-    for directory in ["cache/thumbnails","cache/high-resolution","cache/originals","images"] {
+    for directory in ["cache/thumbnails","cache/medium-resolution","cache/high-resolution","cache/originals","images"] {
         let (count,size)=clear_unreferenced(&s.root,directory,&keep)?;files+=count;bytes+=size;
     }
     Ok((files,bytes))
@@ -208,7 +225,7 @@ fn main(){tauri::Builder::default().plugin(tauri_plugin_opener::init()).setup(|a
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
     app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),original_cooldown:Mutex::new(None)});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
 
 #[cfg(test)]
 mod tests {use super::*;
@@ -232,27 +249,28 @@ mod tests {use super::*;
         let mut s=fixture();
         save_snapshot(&mut s,json!({"version":1,"conversations":[],"saved":[{"local":"images/7-original.jpg"},{"local":"cache/high-resolution/8.jpg"}]}).to_string()).unwrap();
         fs::write(s.root.join("library.backup.json"),json!({"saved":[{"local":"images/6-original.jpg"}]}).to_string()).unwrap();
-        for (directory,name) in [("images","7-original.jpg"),("images","6-original.jpg"),("images","9.jpg"),("cache/thumbnails","9.jpg"),("cache/high-resolution","8.jpg"),("cache/originals","9.jpg"),("collection/originals","10.jpg")] {
+        for (directory,name) in [("images","7-original.jpg"),("images","6-original.jpg"),("images","9.jpg"),("cache/thumbnails","9.jpg"),("cache/medium-resolution","9.jpg"),("cache/high-resolution","8.jpg"),("cache/originals","9.jpg"),("collection/originals","10.jpg")] {
             let folder=s.root.join(directory);fs::create_dir_all(&folder).unwrap();fs::write(folder.join(name),b"art").unwrap();
         }
         let (files,bytes)=clear_cache_files(&s).unwrap();
-        assert_eq!((files,bytes),(3,9));
+        assert_eq!((files,bytes),(4,12));
         assert!(s.root.join("images/7-original.jpg").exists());
         assert!(s.root.join("images/6-original.jpg").exists());
         assert!(s.root.join("cache/high-resolution/8.jpg").exists());
         assert!(s.root.join("collection/originals/10.jpg").exists());
         assert!(!s.root.join("cache/originals/9.jpg").exists());
+        assert!(!s.root.join("cache/medium-resolution/9.jpg").exists());
         fs::remove_dir_all(s.root).unwrap();
     }
     #[test]fn migration_copies_separated_images(){
         let mut s=fixture();let target=fixture();fs::remove_dir(target.root.join("images")).unwrap();
         save_snapshot(&mut s,data("separated")).unwrap();
         fs::write(s.root.join("library.backup.json"),data("backup")).unwrap();
-        for directory in ["cache/thumbnails","cache/high-resolution","cache/originals","collection/originals"] {
+        for directory in ["cache/thumbnails","cache/medium-resolution","cache/high-resolution","cache/originals","collection/originals"] {
             fs::create_dir_all(s.root.join(directory)).unwrap();fs::write(s.root.join(directory).join("1.jpg"),directory.as_bytes()).unwrap();
         }
         copy_library(&s,&target.root).unwrap();
-        for directory in ["cache/thumbnails","cache/high-resolution","cache/originals","collection/originals"] {
+        for directory in ["cache/thumbnails","cache/medium-resolution","cache/high-resolution","cache/originals","collection/originals"] {
             assert_eq!(fs::read(target.root.join(directory).join("1.jpg")).unwrap(),directory.as_bytes());
         }
         assert_eq!(fs::read_to_string(target.root.join("library.backup.json")).unwrap(),data("backup"));

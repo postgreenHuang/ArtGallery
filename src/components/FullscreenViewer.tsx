@@ -1,15 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  ArrowDownToLine,
-  LoaderCircle,
-  Minus,
-  Plus,
-  RotateCcw,
-  X,
-} from "lucide-react";
+import { LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
 import type { Artwork, SavedArtwork } from "../types";
-import { localImage } from "../services/storage";
+import { sizedImage } from "../services/commons";
+import {
+  cacheArtwork,
+  cachedArtwork,
+  localImage,
+  type DownloadProgress,
+} from "../services/storage";
+
+type ViewerVariant = "preview" | "medium" | "hd" | "original";
+const formatBytes = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${(bytes / 1024).toFixed(0)} KB`;
+const variantLabel: Record<ViewerVariant, string> = {
+  preview: "缩略图 · 最长边≤640px",
+  medium: "标准 · 最长边≤1280px",
+  hd: "高清 · 最长边≤2400px",
+  original: "原图 · 最高分辨率",
+};
 
 const clamp = (value: number, maximum = 16) =>
   Math.min(maximum, Math.max(1, value));
@@ -17,24 +28,23 @@ const clamp = (value: number, maximum = 16) =>
 export default function FullscreenViewer({
   art,
   saved,
-  originalLocal,
-  loadingOriginal,
-  originalError,
-  onLoadOriginal,
   onClose,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
-  originalLocal?: string;
-  loadingOriginal: boolean;
-  originalError: boolean;
-  onLoadOriginal: () => void;
   onClose: () => void;
 }) {
   const [source, setSource] = useState({
-    url: originalLocal || saved ? "" : art.thumb,
-    original: false,
+    url: art.thumb,
+    variant: "preview" as ViewerVariant,
   });
+  const [available, setAvailable] = useState<
+    Partial<Record<ViewerVariant, string>>
+  >({ preview: art.thumb });
+  const [selected, setSelected] = useState<ViewerVariant>("preview");
+  const [downloading, setDownloading] = useState<ViewerVariant | null>(null);
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
+  const [downloadError, setDownloadError] = useState("");
   const [loaded, setLoaded] = useState<{
     url: string;
     width: number;
@@ -49,35 +59,102 @@ export default function FullscreenViewer({
   const image = useRef<HTMLImageElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const close = useRef<HTMLButtonElement>(null);
+  const desired = useRef<ViewerVariant>("preview");
+  const pending = useRef<ViewerVariant | null>(null);
+  const mounted = useRef(false);
+  const ownedUrls = useRef(new Set<string>());
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      ownedUrls.current.forEach((url) => URL.revokeObjectURL(url));
+      ownedUrls.current.clear();
+    };
+  }, []);
+  const rememberUrl = (url: string) => {
+    if (!mounted.current) {
+      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+      return false;
+    }
+    if (url.startsWith("blob:")) ownedUrls.current.add(url);
+    return true;
+  };
 
   useEffect(() => {
     let alive = true;
-    let objectUrl = "";
-    const local = originalLocal || saved?.local;
-    if (local)
-      localImage(local)
-        .then((url) => {
-          objectUrl = url;
-          if (alive) {
-            setLoaded(null);
-            setSource({ url, original: true });
-          }
-        })
-        .catch(() => {
-          if (alive) {
-            setLoaded(null);
-            setSource({ url: art.thumb, original: false });
-          }
-        });
-    else {
-      setLoaded(null);
-      setSource({ url: art.thumb, original: false });
-    }
+    setSource({ url: art.thumb, variant: "preview" });
+    setAvailable({ preview: art.thumb });
+    setSelected("preview");
+    desired.current = "preview";
+    cacheArtwork(art.id, art.thumb, "preview")
+      .then(localImage)
+      .then((url) => {
+        if (!alive) {
+          if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+        } else if (rememberUrl(url)) {
+          setAvailable((current) => ({ ...current, preview: url }));
+          if (desired.current === "preview")
+            setSource({ url, variant: "preview" });
+        }
+      })
+      .catch(() => {});
     return () => {
       alive = false;
-      if (objectUrl.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
     };
-  }, [art.id, art.thumb, saved?.local, originalLocal]);
+  }, [art.id, art.thumb]);
+
+  async function selectResolution(variant: ViewerVariant) {
+    if (pending.current && !available[variant] && variant !== "preview") return;
+    desired.current = variant;
+    setSelected(variant);
+    setDownloadError("");
+    const cached = available[variant];
+    if (cached) {
+      setSource({ url: cached, variant });
+      setScale(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    pending.current = variant;
+    setDownloading(variant);
+    setProgress(null);
+    try {
+      let local =
+        (variant === "original" ? saved?.local : undefined) ||
+        (await cachedArtwork(art.id, variant));
+      if (!local) {
+        const url =
+          variant === "original"
+            ? art.original
+            : await sizedImage(art, variant === "medium" ? 1280 : 2400);
+        local = await cacheArtwork(art.id, url, variant, (update) => {
+          if (mounted.current) setProgress(update);
+        });
+      }
+      const url = await localImage(local);
+      if (!rememberUrl(url)) return;
+      setAvailable((current) => ({ ...current, [variant]: url }));
+      if (desired.current === variant) {
+        setSource({ url, variant });
+        setScale(1);
+        setPan({ x: 0, y: 0 });
+      }
+    } catch (error) {
+      if (!mounted.current) return;
+      setDownloadError(error instanceof Error ? error.message : String(error));
+      if (desired.current === variant) {
+        desired.current = source.variant;
+        setSelected(source.variant);
+      }
+    } finally {
+      pending.current = null;
+      if (mounted.current) {
+        setDownloading(null);
+        setProgress(null);
+      }
+    }
+  }
 
   useEffect(() => {
     const element = canvas.current;
@@ -240,32 +317,42 @@ export default function FullscreenViewer({
           <span>{art.artist}</span>
         </div>
         <div className="viewer-actions">
-          {!originalLocal && !saved && (
-            <button
-              onClick={onLoadOriginal}
-              disabled={loadingOriginal}
-              title="加载 Wikimedia 原始分辨率"
-            >
-              {loadingOriginal ? (
-                <LoaderCircle className="spin" size={17} />
-              ) : (
-                <ArrowDownToLine size={17} />
-              )}
-              <span>
-                {loadingOriginal
-                  ? "原图下载中"
-                  : originalError
-                    ? "重试原图"
-                    : "加载原图"}
-              </span>
-            </button>
-          )}
+          <label className="viewer-quality-label" htmlFor="viewer-quality">
+            画质
+          </label>
+          <select
+            id="viewer-quality"
+            aria-label="选择画作分辨率"
+            value={selected}
+            onChange={(event) =>
+              void selectResolution(event.target.value as ViewerVariant)
+            }
+          >
+            {(["preview", "medium", "hd", "original"] as const).map(
+              (variant) => (
+                <option
+                  key={variant}
+                  value={variant}
+                  disabled={
+                    !!downloading &&
+                    !available[variant] &&
+                    variant !== "preview"
+                  }
+                >
+                  {variantLabel[variant]}
+                  {variant === "preview"
+                    ? " · 当前可用"
+                    : available[variant] || (variant === "original" && saved)
+                      ? " · 已缓存"
+                      : " · 选择后下载"}
+                </option>
+              ),
+            )}
+          </select>
           <span className="viewer-resolution" aria-live="polite">
             {loaded?.url === source.url && paintedUrl === source.url
-              ? `${source.original ? "已显示原图" : "当前为缩略图"} · ${loaded.width} × ${loaded.height}px`
-              : source.original
-                ? "原图解码中…"
-                : "缩略图加载中…"}
+              ? `${source.variant === "original" ? "已显示原图" : `已显示${source.variant === "preview" ? "缩略图" : source.variant === "medium" ? "标准图" : "高清图"}`} · ${loaded.width} × ${loaded.height}px`
+              : "图片解码中…"}
           </span>
           <button onClick={() => zoom(1 / 1.25)} aria-label="缩小">
             <Minus size={17} />
@@ -285,7 +372,7 @@ export default function FullscreenViewer({
             1:1
           </button>
           <span className="viewer-pixel-scale">
-            {actualPercent === null ? "" : `原图 ${actualPercent}%`}
+            {actualPercent === null ? "" : `当前图像 ${actualPercent}%`}
           </span>
           <button
             onClick={() => {
@@ -307,6 +394,32 @@ export default function FullscreenViewer({
           </button>
         </div>
       </div>
+      {(downloading || downloadError) && (
+        <div
+          className="viewer-download-status"
+          role="status"
+          aria-live="polite"
+        >
+          {downloading ? (
+            <>
+              <LoaderCircle className="spin" size={15} />
+              <span>
+                {variantLabel[downloading]} ·{" "}
+                {progress ? formatBytes(progress.received) : "正在连接…"}
+                {progress?.total
+                  ? ` / ${formatBytes(progress.total)} · ${Math.round((progress.received / progress.total) * 100)}%`
+                  : ""}
+                {progress ? ` · ${formatBytes(progress.speedBps)}/s` : ""}
+              </span>
+              {progress?.total && (
+                <progress value={progress.received} max={progress.total} />
+              )}
+            </>
+          ) : (
+            <span>{downloadError}</span>
+          )}
+        </div>
+      )}
       <div
         ref={canvas}
         className="viewer-canvas"
@@ -364,8 +477,15 @@ export default function FullscreenViewer({
             }}
             onError={() => {
               setLoaded(null);
-              if (source.original)
-                setSource({ url: art.thumb, original: false });
+              if (source.variant !== "preview") {
+                desired.current = "preview";
+                setSelected("preview");
+                setSource({
+                  url: available.preview || art.thumb,
+                  variant: "preview",
+                });
+                setDownloadError("该尺寸无法显示，请换一个画质重试。");
+              }
             }}
           />
         ) : (
@@ -373,7 +493,7 @@ export default function FullscreenViewer({
         )}
       </div>
       <div className="viewer-hint">
-        滚轮缩放 · 左键拖动 · 1:1 查看真实像素 · Esc 退出
+        选择画质后按需下载 · 滚轮缩放 · 左键拖动 · Esc 退出
       </div>
     </div>,
     document.body,

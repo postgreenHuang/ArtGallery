@@ -204,10 +204,10 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
     page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
   ).toBeVisible();
   await expect(page.locator(".viewer-resolution")).toContainText(
-    "已显示原图 · 1 × 1px",
+    "已显示缩略图 · 1 × 1px",
   );
   await page.getByRole("button", { name: "以 1:1 原始像素显示" }).click();
-  await expect(page.locator(".viewer-pixel-scale")).toHaveText("原图 100%");
+  await expect(page.locator(".viewer-pixel-scale")).toHaveText("当前图像 100%");
   await page.getByRole("button", { name: "重置视图" }).click();
   await page.setViewportSize({ width: 1914, height: 1080 });
   expect(
@@ -333,7 +333,7 @@ test("similar-style request does not fall back to the named artist in direct mod
   ).toBeVisible();
   expect(queries.every((url) => !url.includes("Shishkin"))).toBe(true);
 });
-test("artwork click loads original fullscreen and dark theme persists", async ({
+test("fullscreen loads selectable sizes only on demand and dark theme persists", async ({
   page,
 }) => {
   const originals: string[] = [];
@@ -344,13 +344,27 @@ test("artwork click loads original fullscreen and dark theme persists", async ({
   );
   await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
     api.push(route.request().url());
-    return route.fulfill({ json: { query: { pages: [fixture] } } });
+    const edge = new URL(route.request().url()).searchParams.get("iiurlwidth");
+    const page = structuredClone(fixture);
+    if (edge === "1280" || edge === "2400")
+      page.imageinfo[0].thumburl = `https://thumb.wikimedia.org/${edge}.svg`;
+    return route.fulfill({ json: { query: { pages: [page] } } });
   });
-  await page.route("https://thumb.wikimedia.org/**", (route) =>
-    route.fulfill({ contentType: "image/png", body: pixel }),
-  );
-  await page.route("https://upload.wikimedia.org/**", (route) => {
+  await page.route("https://thumb.wikimedia.org/**", (route) => {
+    const edge = route
+      .request()
+      .url()
+      .match(/\/(1280|2400)\.svg/)?.[1];
+    return edge
+      ? route.fulfill({
+          contentType: "image/svg+xml",
+          body: `<svg xmlns="http://www.w3.org/2000/svg" width="${edge}" height="900"><rect width="100%" height="100%" fill="steelblue"/></svg>`,
+        })
+      : route.fulfill({ contentType: "image/png", body: pixel });
+  });
+  await page.route("https://upload.wikimedia.org/**", async (route) => {
     originals.push(route.request().url());
+    await new Promise((resolve) => setTimeout(resolve, 350));
     return route.fulfill({
       contentType: "image/svg+xml",
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200"><rect width="1600" height="1200" fill="steelblue"/></svg>',
@@ -362,10 +376,40 @@ test("artwork click loads original fullscreen and dark theme persists", async ({
     page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
   ).toBeVisible();
   await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示缩略图",
+  );
+  expect(originals).toHaveLength(0);
+  await page
+    .getByRole("combobox", { name: "选择画作分辨率" })
+    .selectOption("medium");
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示标准图",
+  );
+  expect(api.some((url) => url.includes("iiurlwidth=1280"))).toBe(true);
+  await page
+    .getByRole("combobox", { name: "选择画作分辨率" })
+    .selectOption("preview");
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示缩略图",
+  );
+  await page
+    .getByRole("combobox", { name: "选择画作分辨率" })
+    .selectOption("hd");
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示高清图",
+  );
+  expect(api.some((url) => url.includes("iiurlwidth=2400"))).toBe(true);
+  await page
+    .getByRole("combobox", { name: "选择画作分辨率" })
+    .selectOption("original");
+  await expect(page.locator(".viewer-download-status")).toContainText(
+    "正在连接",
+  );
+  await expect(page.locator(".viewer-resolution")).toContainText(
     "已显示原图 · 1600 × 1200px",
   );
   await page.getByRole("button", { name: "以 1:1 原始像素显示" }).click();
-  await expect(page.locator(".viewer-pixel-scale")).toHaveText("原图 100%");
+  await expect(page.locator(".viewer-pixel-scale")).toHaveText("当前图像 100%");
   await expect(page.locator(".viewer-scale")).not.toHaveText("适屏 ×100%");
   expect(
     await page.locator(".viewer-source-image").evaluate((img) => ({
@@ -389,7 +433,26 @@ test("artwork click loads original fullscreen and dark theme persists", async ({
     /^blob:/,
   );
   expect(originals).toContain("https://upload.wikimedia.org/original.jpg");
-  expect(api.every((url) => !url.includes("iiurlwidth=2400"))).toBe(true);
+  await page
+    .getByRole("combobox", { name: "选择画作分辨率" })
+    .selectOption("medium");
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示标准图",
+  );
+  const mediumQueries = api.filter((url) =>
+    url.includes("iiurlwidth=1280"),
+  ).length;
+  await page.getByRole("button", { name: "退出全屏" }).click();
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await page
+    .getByRole("combobox", { name: "选择画作分辨率" })
+    .selectOption("medium");
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示标准图",
+  );
+  expect(api.filter((url) => url.includes("iiurlwidth=1280"))).toHaveLength(
+    mediumQueries,
+  );
   await page.getByRole("button", { name: "退出全屏" }).click();
   await page.getByRole("button", { name: /偏好与资料库/ }).click();
   await page.getByLabel("界面主题").selectOption("dark");

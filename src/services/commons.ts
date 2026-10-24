@@ -154,15 +154,16 @@ export async function searchArt(
     .filter((a): a is Artwork => !!a);
   return { artworks, offset: data.continue?.gsroffset };
 }
-export async function highResolution(art: Artwork) {
+export async function sizedImage(art: Artwork, maxEdge: 1280 | 2400) {
   const data = await api({
     pageids: String(art.id),
     prop: "imageinfo",
     iiprop: "url",
-    iiurlwidth: "2400",
-    iiurlheight: "2400",
+    iiurlwidth: String(maxEdge),
+    iiurlheight: String(maxEdge),
   });
   const url = data.query?.pages?.[0]?.imageinfo?.[0]?.thumburl;
   if (!url || !safeImage(url)) throw new Error("暂时无法获取高清版本");
   return url;
 }
+export const highResolution = (art: Artwork) => sizedImage(art, 2400);

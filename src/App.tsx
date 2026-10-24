@@ -267,11 +267,6 @@ export default function App() {
   const [detail, setDetail] = useState<Artwork | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
   const viewerFromDetail = useRef(false);
-  const [viewerOriginal, setViewerOriginal] = useState<Record<number, string>>(
-    {},
-  );
-  const [viewerLoadingId, setViewerLoadingId] = useState<number | null>(null);
-  const [viewerErrorId, setViewerErrorId] = useState<number | null>(null);
   const browserFullscreen = useRef(false);
   const [hd, setHd] = useState<Record<number, string>>({});
   const [hdBusy, setHdBusy] = useState(false);
@@ -348,21 +343,6 @@ export default function App() {
     document.addEventListener("fullscreenchange", changed);
     return () => document.removeEventListener("fullscreenchange", changed);
   }, [closeViewer]);
-  async function loadOriginalForViewer(art: Artwork) {
-    const saved = savedFor(art.id);
-    if (viewerOriginal[art.id] || isOriginalLocal(saved?.local)) return;
-    setViewerLoadingId(art.id);
-    setViewerErrorId(null);
-    try {
-      const local = await cacheArtwork(art.id, art.original, "original");
-      setViewerOriginal((current) => ({ ...current, [art.id]: local }));
-    } catch (error) {
-      setViewerErrorId(art.id);
-      setToast(`原图加载失败：${errorText(error)}`);
-    } finally {
-      setViewerLoadingId((current) => (current === art.id ? null : current));
-    }
-  }
   function openViewer(art: Artwork, fromDetail = false) {
     viewerFromDetail.current = fromDetail;
     setDetail(art);
@@ -379,7 +359,6 @@ export default function App() {
           browserFullscreen.current = true;
         })
         .catch(() => {});
-    void loadOriginalForViewer(art);
   }
   useEffect(() => {
     if (!desktop) return;
@@ -1838,7 +1817,7 @@ export default function App() {
                 className="secondary-button"
                 onClick={() => openViewer(detail, true)}
               >
-                <Maximize2 size={16} /> 全屏查看原始分辨率
+                <Maximize2 size={16} /> 全屏欣赏 · 可选画质
               </button>
               <a
                 className="source-link"
@@ -1868,10 +1847,6 @@ export default function App() {
               ? savedFor(detail.id)
               : undefined
           }
-          originalLocal={viewerOriginal[detail.id]}
-          loadingOriginal={viewerLoadingId === detail.id}
-          originalError={viewerErrorId === detail.id}
-          onLoadOriginal={() => void loadOriginalForViewer(detail)}
           onClose={closeViewer}
         />
       )}
