@@ -41,9 +41,11 @@ export default function FullscreenViewer({
     height: number;
   } | null>(null);
   const [fitRatio, setFitRatio] = useState(1);
+  const [paintedUrl, setPaintedUrl] = useState("");
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const canvas = useRef<HTMLDivElement>(null);
+  const pixels = useRef<HTMLCanvasElement>(null);
   const image = useRef<HTMLImageElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -81,8 +83,13 @@ export default function FullscreenViewer({
     const element = canvas.current;
     if (!element || !loaded) return;
     const update = () => {
-      const img = image.current;
-      if (img?.clientWidth) setFitRatio(img.clientWidth / loaded.width);
+      setFitRatio(
+        Math.min(
+          1,
+          element.clientWidth / loaded.width,
+          element.clientHeight / loaded.height,
+        ),
+      );
     };
     update();
     const observer = new ResizeObserver(update);
@@ -93,6 +100,76 @@ export default function FullscreenViewer({
   const oneToOne = loaded && fitRatio > 0 ? 1 / fitRatio : 1;
   const maximum = Math.max(16, oneToOne);
   const actualPercent = loaded ? Math.round(scale * fitRatio * 100) : null;
+
+  useEffect(() => {
+    // A remote thumbnail may taint the canvas; reset it before drawing a local original.
+    if (pixels.current) pixels.current.width = pixels.current.width;
+    setPaintedUrl("");
+  }, [source.url]);
+
+  useEffect(() => {
+    const surface = pixels.current;
+    const sourceImage = image.current;
+    const frame = canvas.current;
+    if (
+      !surface ||
+      !sourceImage ||
+      !frame ||
+      !loaded ||
+      loaded.url !== source.url
+    )
+      return;
+    let animation = 0;
+    const paint = () => {
+      const width = frame.clientWidth;
+      const height = frame.clientHeight;
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const targetWidth = Math.round(width * ratio);
+      const targetHeight = Math.round(height * ratio);
+      if (!targetWidth || !targetHeight) return;
+      if (surface.width !== targetWidth) surface.width = targetWidth;
+      if (surface.height !== targetHeight) surface.height = targetHeight;
+      const context = surface.getContext("2d");
+      if (!context) return;
+      context.clearRect(0, 0, targetWidth, targetHeight);
+      const zoom = fitRatio * scale;
+      if (zoom <= 0) return;
+      const sourceWidth = width / zoom;
+      const sourceHeight = height / zoom;
+      const sourceX = loaded.width / 2 - (width / 2 + pan.x) / zoom;
+      const sourceY = loaded.height / 2 - (height / 2 + pan.y) / zoom;
+      const left = Math.max(0, sourceX);
+      const top = Math.max(0, sourceY);
+      const right = Math.min(loaded.width, sourceX + sourceWidth);
+      const bottom = Math.min(loaded.height, sourceY + sourceHeight);
+      if (right <= left || bottom <= top) return;
+      context.imageSmoothingEnabled = zoom < 1;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(
+        sourceImage,
+        left,
+        top,
+        right - left,
+        bottom - top,
+        (left - sourceX) * zoom * ratio,
+        (top - sourceY) * zoom * ratio,
+        (right - left) * zoom * ratio,
+        (bottom - top) * zoom * ratio,
+      );
+      setPaintedUrl(source.url);
+    };
+    const schedule = () => {
+      cancelAnimationFrame(animation);
+      animation = requestAnimationFrame(paint);
+    };
+    schedule();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(frame);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(animation);
+    };
+  }, [loaded, source.url, fitRatio, scale, pan]);
 
   useEffect(() => {
     close.current?.focus();
@@ -184,7 +261,7 @@ export default function FullscreenViewer({
             </button>
           )}
           <span className="viewer-resolution" aria-live="polite">
-            {loaded?.url === source.url
+            {loaded?.url === source.url && paintedUrl === source.url
               ? `${source.original ? "已显示原图" : "当前为缩略图"} · ${loaded.width} × ${loaded.height}px`
               : source.original
                 ? "原图解码中…"
@@ -253,11 +330,20 @@ export default function FullscreenViewer({
           drag.current = null;
         }}
       >
+        <canvas
+          ref={pixels}
+          className="viewer-render-canvas"
+          role="img"
+          aria-label={art.title}
+          data-pan-x={pan.x}
+          data-pan-y={pan.y}
+        />
         {source.url ? (
           <img
             ref={image}
+            className="viewer-source-image"
             src={source.url}
-            alt={art.title}
+            alt=""
             draggable={false}
             onLoad={(event) => {
               const img = event.currentTarget;
@@ -266,16 +352,20 @@ export default function FullscreenViewer({
                 width: img.naturalWidth,
                 height: img.naturalHeight,
               });
-              if (img.naturalWidth)
-                setFitRatio(img.clientWidth / img.naturalWidth);
+              const element = canvas.current;
+              if (element && img.naturalWidth && img.naturalHeight)
+                setFitRatio(
+                  Math.min(
+                    1,
+                    element.clientWidth / img.naturalWidth,
+                    element.clientHeight / img.naturalHeight,
+                  ),
+                );
             }}
             onError={() => {
               setLoaded(null);
               if (source.original)
                 setSource({ url: art.thumb, original: false });
-            }}
-            style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
             }}
           />
         ) : (

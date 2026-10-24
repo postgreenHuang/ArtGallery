@@ -117,13 +117,14 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await page.mouse.down();
   await page.mouse.move(centerX + 80, centerY + 40, { steps: 4 });
   await page.mouse.up();
-  await expect
-    .poll(() =>
-      page
-        .locator(".viewer-canvas img")
-        .evaluate((el) => (el as HTMLElement).style.transform),
-    )
-    .toContain("translate(80px, 40px)");
+  await expect(page.locator(".viewer-render-canvas")).toHaveAttribute(
+    "data-pan-x",
+    "80",
+  );
+  await expect(page.locator(".viewer-render-canvas")).toHaveAttribute(
+    "data-pan-y",
+    "40",
+  );
   await page.locator(".viewer-canvas").dispatchEvent("wheel", {
     deltaY: -240,
     clientX: 700,
@@ -252,6 +253,23 @@ test("artwork click loads original fullscreen and dark theme persists", async ({
   await page.getByRole("button", { name: "以 1:1 原始像素显示" }).click();
   await expect(page.locator(".viewer-pixel-scale")).toHaveText("原图 100%");
   await expect(page.locator(".viewer-scale")).not.toHaveText("适屏 ×100%");
+  expect(
+    await page.locator(".viewer-source-image").evaluate((img) => ({
+      natural: (img as HTMLImageElement).naturalWidth,
+      layout: (img as HTMLImageElement).clientWidth,
+    })),
+  ).toEqual({ natural: 1600, layout: 0 });
+  await expect
+    .poll(() =>
+      page.locator(".viewer-render-canvas").evaluate((node) => {
+        const canvas = node as HTMLCanvasElement;
+        const context = canvas.getContext("2d")!;
+        return Array.from(
+          context.getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data,
+        ).slice(0, 3);
+      }),
+    )
+    .toEqual([70, 130, 180]);
   await expect(page.locator(".viewer-canvas img")).toHaveAttribute(
     "src",
     /^blob:/,
