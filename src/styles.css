@@ -1231,9 +1231,18 @@ main {
   background: #3d4b3c;
 }
 .viewer-scale {
-  min-width: 53px;
+  min-width: 82px;
   font: 12px Georgia;
   color: #cbd5c3;
+  text-align: center;
+}
+.viewer-pixel-scale {
+  min-width: 58px;
+  color: #cbd5c3;
+  font:
+    11px Georgia,
+    serif;
+  white-space: nowrap;
   text-align: center;
 }
 .viewer-resolution {
@@ -1550,6 +1559,24 @@ main {
 .sync-note small {
   font-size: 10px;
   color: #a1ab91;
+}
+.cache-cleanup {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #dce2d3;
+}
+.cache-cleanup h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.cache-cleanup p {
+  font-size: 11px;
+  line-height: 1.8;
+  color: #829073;
+}
+.cache-cleanup .secondary-button {
+  margin-top: 6px;
 }
 .inline-error,
 .error-banner {
@@ -2006,11 +2033,15 @@ main {
 :root[data-theme="dark"] .library-settings > p,
 :root[data-theme="dark"] .sync-note p,
 :root[data-theme="dark"] .sync-note small,
+:root[data-theme="dark"] .cache-cleanup p,
 :root[data-theme="dark"] .artist-suggestions small,
 :root[data-theme="dark"] .artist-suggestions .suggestion-reason,
 :root[data-theme="dark"] .artwork-chat-context em,
 :root[data-theme="dark"] .toggle-label small {
   color: #adbcaa;
+}
+:root[data-theme="dark"] .cache-cleanup {
+  border-color: #465449;
 }
 :root[data-theme="dark"] .settings-dialog input:not([type="checkbox"]),
 :root[data-theme="dark"] .settings-dialog select {

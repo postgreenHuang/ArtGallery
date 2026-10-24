@@ -11,7 +11,8 @@ import {
 import type { Artwork, SavedArtwork } from "../types";
 import { localImage } from "../services/storage";
 
-const clamp = (value: number) => Math.min(16, Math.max(1, value));
+const clamp = (value: number, maximum = 16) =>
+  Math.min(maximum, Math.max(1, value));
 
 export default function FullscreenViewer({
   art,
@@ -30,10 +31,20 @@ export default function FullscreenViewer({
   onLoadOriginal: () => void;
   onClose: () => void;
 }) {
-  const [src, setSrc] = useState(originalLocal || saved ? "" : art.thumb);
+  const [source, setSource] = useState({
+    url: originalLocal || saved ? "" : art.thumb,
+    original: false,
+  });
+  const [loaded, setLoaded] = useState<{
+    url: string;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [fitRatio, setFitRatio] = useState(1);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const canvas = useRef<HTMLDivElement>(null);
+  const image = useRef<HTMLImageElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const close = useRef<HTMLButtonElement>(null);
 
@@ -45,17 +56,43 @@ export default function FullscreenViewer({
       localImage(local)
         .then((url) => {
           objectUrl = url;
-          if (alive) setSrc(url);
+          if (alive) {
+            setLoaded(null);
+            setSource({ url, original: true });
+          }
         })
         .catch(() => {
-          if (alive) setSrc(art.thumb);
+          if (alive) {
+            setLoaded(null);
+            setSource({ url: art.thumb, original: false });
+          }
         });
-    else setSrc(art.thumb);
+    else {
+      setLoaded(null);
+      setSource({ url: art.thumb, original: false });
+    }
     return () => {
       alive = false;
       if (objectUrl.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
     };
   }, [art.id, art.thumb, saved?.local, originalLocal]);
+
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element || !loaded) return;
+    const update = () => {
+      const img = image.current;
+      if (img?.clientWidth) setFitRatio(img.clientWidth / loaded.width);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [loaded]);
+
+  const oneToOne = loaded && fitRatio > 0 ? 1 / fitRatio : 1;
+  const maximum = Math.max(16, oneToOne);
+  const actualPercent = loaded ? Math.round(scale * fitRatio * 100) : null;
 
   useEffect(() => {
     close.current?.focus();
@@ -69,7 +106,7 @@ export default function FullscreenViewer({
         onClose();
       }
       if (event.key === "+" || event.key === "=")
-        setScale((s) => clamp(s * 1.25));
+        setScale((s) => clamp(s * 1.25, maximum));
       if (event.key === "-") setScale((s) => clamp(s / 1.25));
       if (event.key === "0") {
         setScale(1);
@@ -82,7 +119,7 @@ export default function FullscreenViewer({
       document.documentElement.style.overflow = htmlOverflow;
       document.body.style.overflow = bodyOverflow;
     };
-  }, [onClose]);
+  }, [onClose, maximum]);
 
   useEffect(() => {
     const element = canvas.current;
@@ -93,7 +130,7 @@ export default function FullscreenViewer({
       const x = event.clientX - rect.left - rect.width / 2;
       const y = event.clientY - rect.top - rect.height / 2;
       setScale((old) => {
-        const next = clamp(old * Math.exp(-event.deltaY * 0.002));
+        const next = clamp(old * Math.exp(-event.deltaY * 0.002), maximum);
         const ratio = next / old;
         setPan((p) => ({
           x: p.x + (1 - ratio) * (x - p.x),
@@ -104,11 +141,11 @@ export default function FullscreenViewer({
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
-  }, []);
+  }, [maximum]);
 
   const zoom = (factor: number) => {
     setScale((old) => {
-      const next = clamp(old * factor);
+      const next = clamp(old * factor, maximum);
       if (next === 1) setPan({ x: 0, y: 0 });
       return next;
     });
@@ -146,18 +183,33 @@ export default function FullscreenViewer({
               </span>
             </button>
           )}
-          {(originalLocal || saved) && (
-            <span className="viewer-resolution">
-              原图 · {art.width} × {art.height}px
-            </span>
-          )}
+          <span className="viewer-resolution" aria-live="polite">
+            {loaded?.url === source.url
+              ? `${source.original ? "已显示原图" : "当前为缩略图"} · ${loaded.width} × ${loaded.height}px`
+              : source.original
+                ? "原图解码中…"
+                : "缩略图加载中…"}
+          </span>
           <button onClick={() => zoom(1 / 1.25)} aria-label="缩小">
             <Minus size={17} />
           </button>
-          <span className="viewer-scale">{Math.round(scale * 100)}%</span>
+          <span className="viewer-scale" title="相对于适合窗口的放大倍数">
+            适屏 ×{Math.round(scale * 100)}%
+          </span>
           <button onClick={() => zoom(1.25)} aria-label="放大">
             <Plus size={17} />
           </button>
+          <button
+            onClick={() => setScale(clamp(oneToOne, maximum))}
+            disabled={!loaded}
+            title="一个图片像素对应一个屏幕 CSS 像素"
+            aria-label="以 1:1 原始像素显示"
+          >
+            1:1
+          </button>
+          <span className="viewer-pixel-scale">
+            {actualPercent === null ? "" : `原图 ${actualPercent}%`}
+          </span>
           <button
             onClick={() => {
               setScale(1);
@@ -201,11 +253,27 @@ export default function FullscreenViewer({
           drag.current = null;
         }}
       >
-        {src ? (
+        {source.url ? (
           <img
-            src={src}
+            ref={image}
+            src={source.url}
             alt={art.title}
             draggable={false}
+            onLoad={(event) => {
+              const img = event.currentTarget;
+              setLoaded({
+                url: img.currentSrc || source.url,
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+              });
+              if (img.naturalWidth)
+                setFitRatio(img.clientWidth / img.naturalWidth);
+            }}
+            onError={() => {
+              setLoaded(null);
+              if (source.original)
+                setSource({ url: art.thumb, original: false });
+            }}
             style={{
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
             }}
@@ -214,7 +282,9 @@ export default function FullscreenViewer({
           <div className="viewer-loading">正在打开画作…</div>
         )}
       </div>
-      <div className="viewer-hint">滚轮缩放 · 左键拖动画作 · Esc 退出</div>
+      <div className="viewer-hint">
+        滚轮缩放 · 左键拖动 · 1:1 查看真实像素 · Esc 退出
+      </div>
     </div>,
     document.body,
   );

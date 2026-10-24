@@ -90,8 +90,11 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
     page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
   ).toBeVisible();
   await expect(page.locator(".viewer-resolution")).toContainText(
-    "9000 × 6000px",
+    "已显示原图 · 1 × 1px",
   );
+  await page.getByRole("button", { name: "以 1:1 原始像素显示" }).click();
+  await expect(page.locator(".viewer-pixel-scale")).toHaveText("原图 100%");
+  await page.getByRole("button", { name: "重置视图" }).click();
   await page.setViewportSize({ width: 1914, height: 1080 });
   expect(
     await page.locator(".fullscreen-viewer").evaluate((el) => ({
@@ -171,7 +174,11 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await page.getByRole("button", { name: /偏好与资料库/ }).click();
   await page.getByRole("button", { name: "资料库与同步" }).click();
   await expect(page.getByText("一个文件夹，带走你的美术馆。")).toBeVisible();
+  await page.getByRole("button", { name: "清理临时图片" }).click();
+  await expect(page.getByRole("status")).toContainText("画架图片已保留");
   await page.getByRole("button", { name: "关闭设置" }).click();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(page.locator(".art-image img")).toHaveAttribute("src", /^blob:/);
   await page.screenshot({ path: "test-results/history.png", fullPage: true });
 });
 test("network failure remains actionable", async ({ page }) => {
@@ -229,7 +236,10 @@ test("artwork click loads original fullscreen and dark theme persists", async ({
   );
   await page.route("https://upload.wikimedia.org/**", (route) => {
     originals.push(route.request().url());
-    return route.fulfill({ contentType: "image/png", body: pixel });
+    return route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200"><rect width="1600" height="1200" fill="steelblue"/></svg>',
+    });
   });
   await page.goto("/");
   await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
@@ -237,8 +247,11 @@ test("artwork click loads original fullscreen and dark theme persists", async ({
     page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
   ).toBeVisible();
   await expect(page.locator(".viewer-resolution")).toContainText(
-    "9000 × 6000px",
+    "已显示原图 · 1600 × 1200px",
   );
+  await page.getByRole("button", { name: "以 1:1 原始像素显示" }).click();
+  await expect(page.locator(".viewer-pixel-scale")).toHaveText("原图 100%");
+  await expect(page.locator(".viewer-scale")).not.toHaveText("适屏 ×100%");
   await expect(page.locator(".viewer-canvas img")).toHaveAttribute(
     "src",
     /^blob:/,

@@ -1,4 +1,4 @@
-import { get, set, del } from "idb-keyval";
+import { get, del, keys, set } from "idb-keyval";
 import { invoke, convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { defaultLibrary, type Library } from "../types";
 export const desktop = isTauri();
@@ -31,7 +31,7 @@ export function writeLibrary(library: Library) {
   return next;
 }
 const downloads = new Map<string, Promise<string>>();
-export type ImageVariant = "preview" | "hd" | "original";
+export type ImageVariant = "preview" | "hd" | "original" | "collection";
 export async function cacheArtwork(
   id: number,
   url: string,
@@ -51,8 +51,17 @@ export async function cacheArtwork(
   }
   const cacheKey = `art-${id}:${variant}`;
   if (await get<Blob>(cacheKey)) return `idb:${id}:${variant}`;
+  if (variant === "collection") {
+    const cached = await get<Blob>(`art-${id}:original`);
+    if (cached) {
+      await set(cacheKey, cached);
+      return `idb:${id}:${variant}`;
+    }
+  }
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(variant === "original" ? 300000 : 45000),
+    signal: AbortSignal.timeout(
+      variant === "original" || variant === "collection" ? 300000 : 45000,
+    ),
   });
   if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
   if (Number(response.headers.get("content-length") || 0) > 512 * 1024 * 1024)
@@ -73,13 +82,22 @@ export async function localImage(local: string): Promise<string> {
   if (!blob) throw new Error("本地图片已丢失，请重新收藏");
   return URL.createObjectURL(blob);
 }
-export async function removeImage(id: number) {
-  if (desktop) await invoke("remove_image", { id });
-  else
-    await Promise.all([
-      del(`art-${id}`),
-      del(`art-${id}:preview`),
-      del(`art-${id}:hd`),
-      del(`art-${id}:original`),
-    ]);
+export async function clearTemporaryImages(savedLocals: string[]) {
+  if (desktop)
+    return invoke<{ files: number; bytes: number }>("clear_image_cache");
+  const keep = new Set(
+    savedLocals.map((local) => `art-${local.replace("idb:", "")}`),
+  );
+  const cached = (await keys()).filter(
+    (key): key is string =>
+      typeof key === "string" &&
+      /^art-\d+(?::(?:preview|hd|original))?$/.test(key) &&
+      !keep.has(key),
+  );
+  let bytes = 0;
+  for (const key of cached) {
+    bytes += (await get<Blob>(key))?.size || 0;
+    await del(key);
+  }
+  return { files: cached.length, bytes };
 }

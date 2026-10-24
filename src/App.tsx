@@ -43,11 +43,13 @@ import type {
 import { defaultLibrary } from "./types";
 import {
   cacheArtwork,
+  clearTemporaryImages,
   desktop,
   localImage,
   readLibrary,
   writeLibrary,
 } from "./services/storage";
+
 import { highResolution, searchArt } from "./services/commons";
 import {
   explainArtwork,
@@ -55,6 +57,13 @@ import {
   planSearch,
   suggestArtists,
 } from "./services/ai";
+
+const isOriginalLocal = (local?: string) =>
+  !!local &&
+  (local.startsWith("collection/originals/") ||
+    local.includes("-original.") ||
+    local.endsWith(":original") ||
+    local.endsWith(":collection"));
 
 const prompts = [
   {
@@ -154,9 +163,7 @@ function ArtCard({
   onContext: (x: number, y: number) => void;
   pending: boolean;
 }) {
-  const originalSaved =
-    !!saved &&
-    (saved.local.includes("-original.") || saved.local.endsWith(":original"));
+  const originalSaved = isOriginalLocal(saved?.local);
   return (
     <article
       className="art-card"
@@ -332,13 +339,7 @@ export default function App() {
   }, [closeViewer]);
   async function loadOriginalForViewer(art: Artwork) {
     const saved = savedFor(art.id);
-    if (
-      viewerOriginal[art.id] ||
-      (saved &&
-        (saved.local.includes("-original.") ||
-          saved.local.endsWith(":original")))
-    )
-      return;
+    if (viewerOriginal[art.id] || isOriginalLocal(saved?.local)) return;
     setViewerLoadingId(art.id);
     setViewerErrorId(null);
     try {
@@ -828,18 +829,14 @@ export default function App() {
   }
   async function save(art: Artwork) {
     const existing = savedFor(art.id);
-    if (
-      existing &&
-      (existing.local.includes("-original.") ||
-        existing.local.endsWith(":original"))
-    ) {
+    if (existing && isOriginalLocal(existing.local)) {
       setToast("这件作品的原图已经在画架上");
       return;
     }
     if (saving.includes(art.id)) return;
     setSaving((s) => [...s, art.id]);
     try {
-      const local = await cacheArtwork(art.id, art.original, "original");
+      const local = await cacheArtwork(art.id, art.original, "collection");
       setLibrary((l) => ({
         ...l,
         saved: l.saved.some((s) => s.artwork.id === art.id)
@@ -879,8 +876,7 @@ export default function App() {
         setLibrary((l) => ({
           ...l,
           saved: l.saved.map((s) =>
-            s.artwork.id === art.id &&
-            !(s.local.includes("-original.") || s.local.endsWith(":original"))
+            s.artwork.id === art.id && !isOriginalLocal(s.local)
               ? { ...s, local, savedAt: Date.now() }
               : s,
           ),
@@ -1713,11 +1709,7 @@ export default function App() {
                 }
               }}
             >
-              {hd[detail.id] &&
-              !(
-                savedFor(detail.id)?.local.includes("-original.") ||
-                savedFor(detail.id)?.local.endsWith(":original")
-              ) ? (
+              {hd[detail.id] && !isOriginalLocal(savedFor(detail.id)?.local) ? (
                 <img src={hd[detail.id]} alt={detail.title} />
               ) : (
                 <ArtImage
@@ -1727,8 +1719,7 @@ export default function App() {
                 />
               )}
               <span>
-                {savedFor(detail.id)?.local.includes("-original.") ||
-                savedFor(detail.id)?.local.endsWith(":original")
+                {isOriginalLocal(savedFor(detail.id)?.local)
                   ? `本地原图 · ${detail.width} × ${detail.height} px`
                   : hd[detail.id]
                     ? "高清 · 最长边 2400 px"
@@ -1777,8 +1768,7 @@ export default function App() {
                 disabled={saving.includes(detail.id)}
               >
                 <Bookmark size={16} />
-                {savedFor(detail.id)?.local.includes("-original.") ||
-                savedFor(detail.id)?.local.endsWith(":original")
+                {isOriginalLocal(savedFor(detail.id)?.local)
                   ? "已收入我的画架 · 原图"
                   : savedFor(detail.id)
                     ? "升级画架为原图"
@@ -1821,8 +1811,7 @@ export default function App() {
         <FullscreenViewer
           art={detail}
           saved={
-            savedFor(detail.id)?.local.includes("-original.") ||
-            savedFor(detail.id)?.local.endsWith(":original")
+            isOriginalLocal(savedFor(detail.id)?.local)
               ? savedFor(detail.id)
               : undefined
           }
@@ -1836,6 +1825,7 @@ export default function App() {
       {showSettings && (
         <SettingsDialog
           settings={library.settings}
+          savedLocals={library.saved.map((item) => item.local)}
           blocked={busy || saving.length > 0 || hdBusy}
           onClose={() => setShowSettings(false)}
           onSave={(settings) => {
@@ -1923,6 +1913,7 @@ export default function App() {
 
 function SettingsDialog({
   settings,
+  savedLocals,
   onClose,
   onSave,
   onSwitch,
@@ -1930,6 +1921,7 @@ function SettingsDialog({
   blocked,
 }: {
   settings: Settings;
+  savedLocals: string[];
   onClose: () => void;
   onSave: (s: Settings) => void;
   onSwitch: () => Promise<void>;
@@ -1942,6 +1934,8 @@ function SettingsDialog({
   const [folder, setFolder] = useState("");
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [cacheResult, setCacheResult] = useState("");
+  const [cacheCleared, setCacheCleared] = useState(false);
   const [tab, setTab] = useState<"ai" | "library">("ai");
   useEffect(() => {
     if (desktop)
@@ -2010,6 +2004,26 @@ function SettingsDialog({
       setWorking(false);
     }
   }
+  async function clearCache() {
+    setError("");
+    setWorking(true);
+    try {
+      await flush();
+      const result = await clearTemporaryImages(savedLocals);
+      setCacheResult(
+        `已清理 ${result.files} 个临时文件（${(result.bytes / 1024 / 1024).toFixed(1)} MB），画架图片已保留。`,
+      );
+      setCacheCleared(true);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setWorking(false);
+    }
+  }
+  const closeSettings = () => {
+    onClose();
+    if (cacheCleared) location.reload();
+  };
   return (
     <div className="modal-backdrop">
       <section
@@ -2026,7 +2040,7 @@ function SettingsDialog({
           <button
             className="icon-button"
             aria-label="关闭设置"
-            onClick={onClose}
+            onClick={closeSettings}
             disabled={working}
           >
             <X />
@@ -2206,7 +2220,24 @@ function SettingsDialog({
               <p>
                 请等坚果云同步完成后再打开，避免两台电脑同时编辑。检测到外部修改时会停止覆盖保存。
               </p>
-              <small>library.json · library.backup.json · images/</small>
+              <small>
+                library.json · collection/originals/ · cache/（旧版 images/
+                自动兼容）
+              </small>
+            </div>
+            <div className="cache-cleanup">
+              <h4>临时图片缓存</h4>
+              <p>
+                检索缩略图、高清预览和未收藏的原图分别存放。清理只删除临时文件；画架收藏的图片与对话记录保留。旧版资料库中仍被收藏引用的图片也会保留。
+              </p>
+              <button
+                className="secondary-button"
+                disabled={working || blocked}
+                onClick={() => void clearCache()}
+              >
+                清理临时图片
+              </button>
+              {cacheResult && <p role="status">{cacheResult}</p>}
             </div>
             {error && (
               <p className="inline-error" role="alert">
