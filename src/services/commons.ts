@@ -155,6 +155,7 @@ export async function searchArt(
   return { artworks, offset: data.continue?.gsroffset };
 }
 export async function sizedImage(art: Artwork, maxEdge: 1280 | 2400) {
+  if (art.provider) return maxEdge === 1280 ? art.medium || art.thumb : art.hd || art.original;
   const data = await api({
     pageids: String(art.id),
     prop: "imageinfo",

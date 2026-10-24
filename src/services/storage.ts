@@ -93,11 +93,11 @@ export async function cacheArtwork(
   });
   if (response.status === 429)
     throw new Error(
-      "Wikimedia 暂时限制下载（HTTP 429），请稍后重试；已下载的本地作品仍可查看。",
+      `${new URL(url).hostname.includes("wikimedia.org") ? "Wikimedia" : "馆藏来源"} 暂时限制下载（HTTP 429），请稍后重试；已下载的本地作品仍可查看。`,
     );
   if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
   if (Number(response.headers.get("content-length") || 0) > 512 * 1024 * 1024)
-    throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");
+    throw new Error("图片超过 512 MB，请从馆藏来源页查看");
   let blob: Blob;
   if (onProgress && response.body) {
     const reader = response.body.getReader();
@@ -112,7 +112,7 @@ export async function cacheArtwork(
         if (done) break;
         received += value.byteLength;
         if (received > 512 * 1024 * 1024)
-          throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");
+          throw new Error("图片超过 512 MB，请从馆藏来源页查看");
         parts.push(value as Uint8Array<ArrayBuffer>);
         const now = performance.now();
         if (now - previousTime >= 200 || (total && received >= total)) {
@@ -139,7 +139,7 @@ export async function cacheArtwork(
   } else blob = await response.blob();
   if (!blob.type.startsWith("image/")) throw new Error("下载内容不是图片");
   if (blob.size > 512 * 1024 * 1024)
-    throw new Error("原图超过 512 MB，请从 Wikimedia 来源页查看");
+    throw new Error("图片超过 512 MB，请从馆藏来源页查看");
   await set(cacheKey, blob);
   return `idb:${id}:${variant}`;
 }

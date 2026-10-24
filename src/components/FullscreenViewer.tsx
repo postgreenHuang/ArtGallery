@@ -79,6 +79,7 @@ export default function FullscreenViewer({
   const pending = useRef<ViewerVariant | null>(null);
   const mounted = useRef(false);
   const ownedUrls = useRef(new Set<string>());
+  const fullImageName = art.provider === "cleveland" ? "馆方高清 JPEG" : "原图";
 
   useEffect(() => {
     mounted.current = true;
@@ -392,7 +393,7 @@ export default function FullscreenViewer({
                     variant !== "preview"
                   }
                 >
-                  {variantLabel[variant]}
+                  {variant === "original" && art.provider === "cleveland" ? "馆方高清 JPEG · 最长边约3400px" : variantLabel[variant]}
                   {variant === "preview"
                     ? " · 当前可用"
                     : available[variant] || (variant === "original" && originalLocal)
@@ -404,7 +405,7 @@ export default function FullscreenViewer({
           </select>
           <span className="viewer-resolution" aria-live="polite">
             {loaded?.url === source.url && paintedUrl === source.url
-              ? `${source.variant === "original" ? "已显示原图" : `已显示${source.variant === "preview" ? "缩略图" : source.variant === "medium" ? "标准图" : "高清图"}`} · ${loaded.width} × ${loaded.height}px`
+              ? `${source.variant === "original" ? art.provider === "cleveland" ? "已显示馆方高清 JPEG" : "已显示原图" : `已显示${source.variant === "preview" ? "缩略图" : source.variant === "medium" ? "标准图" : "高清图"}`} · ${loaded.width} × ${loaded.height}px`
               : "图片解码中…"}
           </span>
           <button onClick={() => zoom(1 / 1.25)} aria-label="缩小">
@@ -441,11 +442,11 @@ export default function FullscreenViewer({
             className="viewer-save"
             onClick={onSave}
             disabled={saving || !!originalLocal}
-            aria-label={saving ? "正在加入画架" : originalLocal ? "已在画架 · 原图" : saved ? "重试下载原图" : "加入画架"}
-            title={saved && !originalLocal ? "已在画架，点击重试下载原图" : undefined}
+            aria-label={saving ? "正在加入画架" : originalLocal ? `已在画架 · ${fullImageName}` : saved ? `重试下载${fullImageName}` : "加入画架"}
+            title={saved && !originalLocal ? `已在画架，点击重试下载${fullImageName}` : undefined}
           >
             {saving ? <LoaderCircle className="spin" size={17} /> : <Bookmark size={17} fill={saved ? "currentColor" : "none"} />}
-            <span>{saving ? "收藏中…" : originalLocal ? "已收藏" : saved ? "重试原图" : "加入画架"}</span>
+            <span>{saving ? "收藏中…" : originalLocal ? "已收藏" : saved ? `重试${fullImageName}` : "加入画架"}</span>
           </button>
           <button
             ref={close}
@@ -467,7 +468,7 @@ export default function FullscreenViewer({
             <>
               <LoaderCircle className="spin" size={15} />
               <span>
-                {variantLabel[downloading]} ·{" "}
+                {downloading === "original" && art.provider === "cleveland" ? "馆方高清 JPEG" : variantLabel[downloading]} ·{" "}
                 {progress ? formatBytes(progress.received) : "正在连接…"}
                 {progress?.total
                   ? ` / ${formatBytes(progress.total)} · ${Math.round((progress.received / progress.total) * 100)}%`

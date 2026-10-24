@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://upload.wikimedia.org https://thumb.wikimedia.org blob: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://commons.wikimedia.org https://upload.wikimedia.org https://thumb.wikimedia.org; font-src 'self' data:",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://upload.wikimedia.org https://thumb.wikimedia.org https://openaccess-cdn.clevelandart.org https://www.artic.edu blob: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://commons.wikimedia.org https://upload.wikimedia.org https://thumb.wikimedia.org https://openaccess-api.clevelandart.org https://api.artic.edu https://openaccess-cdn.clevelandart.org https://www.artic.edu; font-src 'self' data:",
       "assetProtocol": { "enable": true, "scope": [] }
     }
   },

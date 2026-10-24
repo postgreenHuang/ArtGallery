@@ -52,6 +52,8 @@ import {
 } from "./services/storage";
 
 import { highResolution, searchArt } from "./services/commons";
+import { searchAcrossProviders } from "./services/artSearch";
+import { museumName } from "./services/museums";
 import { discoverArt } from "./services/discovery";
 import { ViewerFullscreenController } from "./services/viewerFullscreen";
 import {
@@ -69,6 +71,7 @@ const isOriginalLocal = (local?: string) =>
     local.includes("-original.") ||
     local.endsWith(":original") ||
     local.endsWith(":collection"));
+const fullImageLabel = (art: Artwork) => art.provider === "cleveland" ? "馆方高清 JPEG" : "原图";
 
 const prompts = [
   {
@@ -104,13 +107,13 @@ function ArtImage({
   onClick?: () => void;
   preferOriginal?: boolean;
 }) {
-  const [src, setSrc] = useState(saved || desktop ? "" : art.thumb);
+  const [src, setSrc] = useState(saved || (desktop && !art.provider) ? "" : art.thumb);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
     let blob = "";
     setFailed(false);
-    setSrc(saved || desktop ? "" : art.thumb);
+    setSrc(saved || (desktop && !art.provider) ? "" : art.thumb);
     const image =
       saved && preferOriginal && isOriginalLocal(saved.local)
         ? localImage(saved.local)
@@ -118,7 +121,7 @@ function ArtImage({
           ? cacheArtwork(art.id, art.thumb, "preview")
               .then(localImage)
               .catch(() => saved.local ? localImage(saved.local) : art.thumb)
-          : desktop
+          : desktop && !art.provider
             ? cacheArtwork(art.id, art.thumb).then(localImage)
             : null;
     if (image)
@@ -196,23 +199,23 @@ function ArtCard({
         <div>
           <p>{art.artist.slice(0, 100)}</p>
           <h3 title={art.title}>{art.title}</h3>
-          {saved && !originalSaved && <small className="art-pending">原图待下载 · 点击书签重试</small>}
+          {saved && !originalSaved && <small className="art-pending">{fullImageLabel(art)}待下载 · 点击书签重试</small>}
         </div>
         <button
           className={`icon-button save ${saved ? "is-saved" : ""}`}
           aria-label={
             saved
               ? originalSaved
-                ? "已在画架 · 原图"
-                : "重试下载原图"
+                ? `已在画架 · ${fullImageLabel(art)}`
+                : `重试下载${fullImageLabel(art)}`
               : "加入画架"
           }
           title={
             saved
               ? originalSaved
-                ? "已在画架 · 原图"
-                : "重试下载原图"
-              : "加入画架 · 下载原图"
+                ? `已在画架 · ${fullImageLabel(art)}`
+                : `重试下载${fullImageLabel(art)}`
+              : `加入画架 · 下载${fullImageLabel(art)}`
           }
           onClick={onSave}
           disabled={pending}
@@ -226,7 +229,7 @@ function ArtCard({
       </div>
       <div className="art-meta">
         <span>{art.date.slice(0, 38)}</span>
-        <span>{art.license}</span>
+        <span>{art.provider ? museumName[art.provider] : art.license}</span>
         {onSimilar && (
           <button className="similar-button" onClick={onSimilar}>
             <Sparkles size={13} /> 查看相似
@@ -739,18 +742,16 @@ export default function App() {
         setPhase("正在核对推荐画家的开放馆藏…");
         const checked = await Promise.all(
           plan.recommendations.map(async (candidate) => {
-            let found = await searchArt(
+            let found = await searchAcrossProviders(
               candidate.query,
               library.settings.scope,
-              0,
               controller.signal,
             );
             let candidateScope = library.settings.scope;
             if (!found.artworks.length && candidateScope === "google") {
-              found = await searchArt(
+              found = await searchAcrossProviders(
                 candidate.query,
                 "commons",
-                0,
                 controller.signal,
               );
               candidateScope = "commons";
@@ -792,9 +793,9 @@ export default function App() {
         }));
         return;
       }
-      setPhase("正在从 Wikimedia 搜集缩略图…");
+      setPhase("正在从多个开放馆藏搜集缩略图…");
       const scope = chosen?.scope || library.settings.scope;
-      const result = await searchArt(plan.query, scope, 0, controller.signal);
+      const result = await searchAcrossProviders(plan.query, scope, controller.signal);
       let suggestions: ArtistSuggestion[] = [];
       let suggestionError = "";
       if (!result.artworks.length && library.settings.useAi && desktop) {
@@ -808,18 +809,16 @@ export default function App() {
           );
           const checked = await Promise.all(
             candidates.map(async (candidate) => {
-              const direct = await searchArt(
+              const direct = await searchAcrossProviders(
                 candidate.query,
                 scope,
-                0,
                 controller.signal,
               );
               if (direct.artworks.length) return { ...candidate, scope };
               if (scope === "google") {
-                const broad = await searchArt(
+                const broad = await searchAcrossProviders(
                   candidate.query,
                   "commons",
-                  0,
                   controller.signal,
                 );
                 if (broad.artworks.length)
@@ -849,12 +848,12 @@ export default function App() {
               ? plan.explanation
               : suggestions.length
                 ? "没有找到对应作品。你可能在说以下画家；这些名称已在开放馆藏中找到相关文件。请选择一个继续搜索。"
-                : `这次没有找到匹配的作品。可以让 AI 辨认画家姓名，或将检索范围扩展到全部 Wikimedia Commons。${suggestionError}`,
+                : `这次没有找到匹配的作品。可以让 AI 辨认画家姓名，或将 Wikimedia 检索范围扩展到全部 Commons。${suggestionError}`,
             artworks: result.artworks,
             suggestions,
             query: plan.query,
             scope,
-            offset: result.offset,
+            providerOffsets: result.offsets,
           },
         ],
       }));
@@ -900,19 +899,16 @@ export default function App() {
       }));
   }
   async function more(message: Message) {
-    if (!current || busy || message.offset === undefined) return;
+    if (!current || busy || (message.offset === undefined && !Object.keys(message.providerOffsets || {}).length)) return;
     const id = current.id;
     setBusy(true);
     setPhase("继续搜集作品…");
     const controller = new AbortController();
     request.current = controller;
     try {
-      const r = await searchArt(
-        message.query!,
-        message.scope || library.settings.scope,
-        message.offset,
-        controller.signal,
-      );
+      const r = message.providerOffsets
+        ? await searchAcrossProviders(message.query!, message.scope || library.settings.scope, controller.signal, message.providerOffsets)
+        : await searchArt(message.query!, message.scope || library.settings.scope, message.offset, controller.signal);
       updateConversation(id, (c) => ({
         ...c,
         messages: c.messages.map((m) =>
@@ -925,7 +921,8 @@ export default function App() {
                     (a) => !m.artworks?.some((old) => old.id === a.id),
                   ),
                 ],
-                offset: r.offset,
+                offset: "offsets" in r ? undefined : r.offset,
+                providerOffsets: "offsets" in r ? r.offsets : undefined,
               }
             : m,
         ),
@@ -942,7 +939,7 @@ export default function App() {
   async function save(art: Artwork) {
     const existing = savedFor(art.id);
     if (existing && isOriginalLocal(existing.local)) {
-      setToast("这件作品的原图已经在画架上");
+      setToast(`这件作品的${fullImageLabel(art)}已经在画架上`);
       return;
     }
     if (saving.includes(art.id)) return;
@@ -974,11 +971,11 @@ export default function App() {
       });
       setToast(
         existing
-          ? "画架作品已升级为原始分辨率"
-          : "已收入画架 · 原图已保存在本地",
+          ? art.provider === "cleveland" ? "画架作品已升级为馆方高清 JPEG" : "画架作品已升级为原始分辨率"
+          : art.provider === "cleveland" ? "已收入画架 · 馆方高清 JPEG 已保存在本地" : "已收入画架 · 原图已保存在本地",
       );
     } catch (e) {
-      setToast(`作品已在画架；原图暂未下载：${errorText(e)} 可稍后在画架中重试。`);
+      setToast(`作品已在画架；${fullImageLabel(art)}暂未下载：${errorText(e)} 可稍后在画架中重试。`);
     } finally {
       setSaving((s) => s.filter((id) => id !== art.id));
     }
@@ -1286,16 +1283,10 @@ export default function App() {
                     : "灵感对话"
                   : "发现艺术"}
           </div>
-          <a
-            className="source-chip"
-            href="https://commons.wikimedia.org/wiki/Category:Google_Art_Project"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <div className="source-chip">
             <span className="status-dot" />
-            Wikimedia Commons
-            <ExternalLink size={12} />
-          </a>
+            Wikimedia · Cleveland · Chicago
+          </div>
         </header>
         {persistError && (
           <div className="error-banner" role="alert">
@@ -1379,10 +1370,7 @@ export default function App() {
                 <div className="collection-toolbar">
                   <span>跨越年代 · 每次遇见不同的画家</span>
                   <span>
-                    {library.settings.scope === "google"
-                      ? "GOOGLE ART PROJECT"
-                      : "WIKIMEDIA COMMONS"}{" "}
-                    <span className="middle-dot">·</span> 开放馆藏
+                    WIKIMEDIA <span className="middle-dot">·</span> CLEVELAND <span className="middle-dot">·</span> CHICAGO
                   </span>
                 </div>
                 {discoverError && discover.length > 0 && (
@@ -1434,7 +1422,7 @@ export default function App() {
                   <p>留下心动的瞬间，慢慢看，常常看。</p>
                 </div>
                 <span className="offline-pill">
-                  <Check size={14} /> {library.saved.some((s) => !isOriginalLocal(s.local)) ? "画架已保存 · 部分原图待下载" : "本地图片 · 离线可看"}
+                  <Check size={14} /> {library.saved.some((s) => !isOriginalLocal(s.local)) ? "画架已保存 · 部分高清图待下载" : "本地图片 · 离线可看"}
                 </span>
               </div>
               <label className="filter">
@@ -1646,10 +1634,7 @@ export default function App() {
                     "作品讲解 · 可持续追问"
                   ) : (
                     <>
-                      {library.settings.scope === "google"
-                        ? "Google Art Project"
-                        : "Wikimedia Commons"}{" "}
-                      · {library.settings.useAi ? "AI 策展" : "直接检索"} ·
+                      多馆藏 · {library.settings.useAi ? "AI 策展" : "直接检索"} ·
                       缩略图优先
                     </>
                   )}
@@ -1760,7 +1745,7 @@ export default function App() {
                     </div>
                   )}
                   {!!m.artworks?.length && cards(m.artworks)}
-                  {m.offset !== undefined && (
+                  {(m.offset !== undefined || !!Object.keys(m.providerOffsets || {}).length) && (
                     <button
                       className="load-more"
                       disabled={busy}
@@ -1844,7 +1829,7 @@ export default function App() {
           )}
           <a href={context.art.source} target="_blank" rel="noreferrer">
             <ExternalLink size={16} />
-            查看 Wikimedia 来源
+            查看馆藏来源
           </a>
         </div>
       )}
@@ -1900,7 +1885,7 @@ export default function App() {
               )}
               <span>
                 {isOriginalLocal(savedFor(detail.id)?.local)
-                  ? `本地原图 · ${detail.width} × ${detail.height} px`
+                  ? `${detail.provider === "cleveland" ? "本地馆方高清 JPEG" : "本地原图"} · ${detail.width} × ${detail.height} px`
                   : hd[detail.id]
                     ? "高清 · 最长边 2400 px"
                     : "轻量预览 · 缩略图"}
@@ -1917,7 +1902,7 @@ export default function App() {
                   "这件作品尚未提供文字介绍。让目光在画面里多停留一会儿。"}
               </p>
               <dl>
-                <dt>原作数字图像</dt>
+                <dt>可用数字图像</dt>
                 <dd>
                   {detail.width} × {detail.height} px
                 </dd>
@@ -1949,10 +1934,10 @@ export default function App() {
               >
                 <Bookmark size={16} />
                 {isOriginalLocal(savedFor(detail.id)?.local)
-                  ? "已收入我的画架 · 原图"
+                  ? `已收入我的画架 · ${fullImageLabel(detail)}`
                   : savedFor(detail.id)
-                    ? "重试下载原图"
-                    : "收入我的画架 · 下载原图"}
+                    ? `重试下载${fullImageLabel(detail)}`
+                    : `收入我的画架 · 下载${fullImageLabel(detail)}`}
               </button>
               <button
                 className="secondary-button"
@@ -2320,7 +2305,7 @@ function SettingsDialog({
               </button>
             )}
             <label>
-              馆藏检索范围
+              Wikimedia 检索范围
               <select
                 value={draft.scope}
                 onChange={(e) =>

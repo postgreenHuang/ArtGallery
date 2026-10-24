@@ -1,5 +1,5 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
-use std::{collections::HashSet, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet}, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
 use tauri::{Emitter, Manager, State};
 use serde_json::{Value, json};
 use fs2::FileExt;
@@ -7,7 +7,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::io::AsyncWriteExt;
 
 struct LibraryState { root: PathBuf, last: Option<String> }
-struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>>, query_cooldown: Mutex<Option<Instant>>, image_cooldown: Mutex<Option<Instant>>, query_pacing: tokio::sync::Mutex<Instant> }
+struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore, chicago_downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>>, query_cooldown: Mutex<Option<Instant>>, image_cooldown: Mutex<Option<Instant>>, museum_cooldowns: Mutex<HashMap<String,Instant>>, query_pacing: tokio::sync::Mutex<Instant>, museum_pacing: tokio::sync::Mutex<Instant>, chicago_image_pacing: tokio::sync::Mutex<Instant> }
 fn err(e: impl std::fmt::Display) -> String { e.to_string() }
 fn check_cooldown(until:&Mutex<Option<Instant>>,label:&str)->Result<(),String>{
     let deadline=until.lock().map_err(err)?;
@@ -93,7 +93,9 @@ async fn switch_library(path:String,mode:String,app:tauri::AppHandle,state:State
     for directory in IMAGE_DIRS {app.asset_protocol_scope().allow_directory(target.join(directory),true).map_err(err)?;}
     s.root=target;s.last=read_optional(&s.root.join("library.json"))?;Ok(())
 }
-fn image_url(url:&str)->Result<reqwest::Url,String>{let u=reqwest::Url::parse(url).map_err(err)?;if u.scheme()!="https"||!matches!(u.host_str(),Some("upload.wikimedia.org"|"thumb.wikimedia.org"))||!u.username().is_empty()||u.password().is_some(){return Err("只允许 Wikimedia 图片地址".into())}Ok(u)}
+fn image_url(url:&str)->Result<reqwest::Url,String>{let u=reqwest::Url::parse(url).map_err(err)?;let host=u.host_str().unwrap_or("");let path=u.path();let trusted=match host{"upload.wikimedia.org"|"thumb.wikimedia.org"=>true,"openaccess-cdn.clevelandart.org"=>path.ends_with("_web.jpg")||path.ends_with("_print.jpg"),"www.artic.edu"=>path.starts_with("/iiif/2/")&&path.ends_with("/0/default.jpg"),_=>false};if u.scheme()!="https"||!trusted||u.port().is_some()||!u.username().is_empty()||u.password().is_some()||u.query().is_some()||u.fragment().is_some(){return Err("只允许已核准馆藏的 HTTPS 图片地址".into())}Ok(u)}
+fn museum_cooldown(state:&AppState,provider:&str)->Result<(),String>{let limits=state.museum_cooldowns.lock().map_err(err)?;if let Some(remaining)=limits.get(provider).and_then(|until|until.checked_duration_since(Instant::now())){return Err(format!("{provider} 暂时受限（HTTP 429），请约 {} 分钟后再试。",remaining.as_secs().div_ceil(60).max(1)))}Ok(())}
+fn note_museum_cooldown(state:&AppState,provider:&str,response:&reqwest::Response)->String{let seconds=response.headers().get(reqwest::header::RETRY_AFTER).and_then(|header|header.to_str().ok()).and_then(|value|value.parse::<u64>().ok()).unwrap_or(300).clamp(60,3600);if let Ok(mut limits)=state.museum_cooldowns.lock(){limits.insert(provider.to_string(),Instant::now()+Duration::from_secs(seconds));}format!("{provider} 暂时受限（HTTP 429），请约 {} 分钟后再试。",seconds.div_ceil(60))}
 #[tauri::command]
 fn cached_image(id:u64,variant:String,state:State<AppState>)->Result<Option<String>,String>{
     let directory=match variant.as_str(){"preview"=>"cache/thumbnails","medium"=>"cache/medium-resolution","hd"=>"cache/high-resolution","original"=>"cache/originals",_=>return Err("无效图片版本".into())};
@@ -117,8 +119,20 @@ async fn commons_query(query:String,state:State<'_,AppState>)->Result<Value,Stri
     response.error_for_status().map_err(err)?.json().await.map_err(err)
 }
 #[tauri::command]
+async fn museum_query(provider:String,query:String,state:State<'_,AppState>)->Result<Value,String>{
+    if query.len()>2048{return Err("馆藏查询过长".into())}
+    let base=match provider.as_str(){"cleveland"=>"https://openaccess-api.clevelandart.org/api/artworks/","chicago"=>"https://api.artic.edu/api/v1/artworks/search",_=>return Err("未知馆藏来源".into())};
+    let mut url=reqwest::Url::parse(base).map_err(err)?;url.set_query(Some(&query));
+    museum_cooldown(&state,&provider)?;
+    {let mut next=state.museum_pacing.lock().await;if let Some(wait)=next.checked_duration_since(Instant::now()){tokio::time::sleep(wait).await;}museum_cooldown(&state,&provider)?;*next=Instant::now()+Duration::from_millis(400);}
+    let response=state.client.get(url).timeout(Duration::from_secs(30)).send().await.map_err(err)?;
+    if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{return Err(note_museum_cooldown(&state,&provider,&response))}
+    response.error_for_status().map_err(err)?.json().await.map_err(err)
+}
+#[tauri::command]
 async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state:State<'_,AppState>)->Result<String,String>{
     let validated=image_url(&url)?;
+    let museum=match validated.host_str(){Some("openaccess-cdn.clevelandart.org")=>Some("cleveland"),Some("www.artic.edu")=>Some("chicago"),_=>None};
     let (directory,suffix)=match variant.as_str(){"preview"=>("cache/thumbnails",""),"medium"=>("cache/medium-resolution","-medium"),"hd"=>("cache/high-resolution","-hd"),"original"=>("cache/originals","-original"),"collection"=>("collection/originals","-original"),_=>return Err("无效图片版本".into())};
     let _permit=state.downloads.acquire().await.map_err(err)?;
     let root=state.library.lock().map_err(err)?.root.clone();
@@ -135,16 +149,18 @@ async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state
         let source=root.join(format!("images/{id}{suffix}.{ext}"));
         if source.is_file(){let relative=format!("{directory}/{id}.{ext}");fs::create_dir_all(root.join(directory)).map_err(err)?;fs::copy(source,root.join(&relative)).map_err(err)?;return Ok(relative)}
     }}
-    if variant=="original"||variant=="collection"{check_original_cooldown(&state)?;}else{check_cooldown(&state.image_cooldown,"图片下载")?;}
+    if let Some(provider)=museum{museum_cooldown(&state,provider)?;}else if variant=="original"||variant=="collection"{check_original_cooldown(&state)?;}else{check_cooldown(&state.image_cooldown,"图片下载")?;}
+    let _chicago_permit=if museum==Some("chicago"){Some(state.chicago_downloads.acquire().await.map_err(err)?)}else{None};
+    if museum==Some("chicago"){let mut next=state.chicago_image_pacing.lock().await;if let Some(wait)=next.checked_duration_since(Instant::now()){tokio::time::sleep(wait).await;}museum_cooldown(&state,"chicago")?;*next=Instant::now()+Duration::from_secs(1);}
     let response=state.client.get(validated).timeout(Duration::from_secs(if variant=="original"||variant=="collection"{300}else{45})).send().await.map_err(err)?;
     if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{
-        return Err(if variant=="original"||variant=="collection"{note_original_rate_limit(&state,&response)}else{note_cooldown(&state.image_cooldown,&response,"图片下载")})
+        return Err(if let Some(provider)=museum{note_museum_cooldown(&state,provider,&response)}else if variant=="original"||variant=="collection"{note_original_rate_limit(&state,&response)}else{note_cooldown(&state.image_cooldown,&response,"图片下载")})
     }
     let mut response=response.error_for_status().map_err(err)?;
     let ext=match response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or(""){"image/jpeg"=>"jpg","image/png"=>"png","image/webp"=>"webp",_=>return Err("不支持的图片类型".into())};
     fs::create_dir_all(root.join(directory)).map_err(err)?;let relative=format!("{directory}/{name}.{ext}");
     let limit=if variant=="original"||variant=="collection"{512_u64*1024*1024}else{32_u64*1024*1024};
-    if response.content_length().unwrap_or(0)>limit{return Err("图片超过下载大小限制，请从 Wikimedia 来源页查看".into())}
+    if response.content_length().unwrap_or(0)>limit{return Err("图片超过下载大小限制，请从馆藏来源页查看".into())}
     let temporary=root.join(directory).join(format!(".{name}-{}-{}.partial",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_nanos()));
     let total=response.content_length();
     let result:Result<String,String>=async {
@@ -154,7 +170,7 @@ async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state
         let mut last_bytes=0_u64;
         while let Some(chunk)=response.chunk().await.map_err(err)?{
             received+=chunk.len() as u64;
-            if received>limit{return Err("图片超过下载大小限制，请从 Wikimedia 来源页查看".into())}
+            if received>limit{return Err("图片超过下载大小限制，请从馆藏来源页查看".into())}
             file.write_all(&chunk).await.map_err(err)?;
             let elapsed=last_emit.elapsed();
             if elapsed>=Duration::from_millis(200)||total.is_some_and(|size|received>=size){
@@ -267,8 +283,8 @@ fn main(){tauri::Builder::default().plugin(tauri_plugin_opener::init()).setup(|a
     let root:PathBuf=if pointer.exists(){let root:PathBuf=serde_json::from_str(&fs::read_to_string(pointer)?)?;if !root.is_dir(){return Err(format!("资料库目录不可用，请等待同步或恢复该目录：{}",root.display()).into())}root}else{app.path().app_data_dir()?.join("Library")};
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
-    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),query_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
+    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
 
 #[cfg(test)]
 mod tests {use super::*;
@@ -290,15 +306,18 @@ mod tests {use super::*;
         assert!(ai_text(&json!({"choices":[{"message":{"content":null,"reasoning_content":"private"}}]})).unwrap_err().contains("没有可用正文"));
     }
     #[test]fn original_rate_limit_waits_without_blocking_local_reads(){
-        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),query_pacing:tokio::sync::Mutex::new(Instant::now())};
+        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())};
         assert!(check_original_cooldown(&state).is_ok());
         *state.original_cooldown.lock().unwrap()=Some(Instant::now()+Duration::from_secs(90));
         assert!(check_original_cooldown(&state).unwrap_err().contains("2 分钟"));
         *state.original_cooldown.lock().unwrap()=Some(Instant::now()-Duration::from_secs(1));
         assert!(check_original_cooldown(&state).is_ok());
+        state.museum_cooldowns.lock().unwrap().insert("cleveland".into(),Instant::now()+Duration::from_secs(90));
+        assert!(museum_cooldown(&state,"cleveland").is_err());
+        assert!(museum_cooldown(&state,"chicago").is_ok());
     }
     #[test]fn native_asset_path_omits_windows_device_prefix(){assert_eq!(webview_path(std::path::Path::new(r"\\?\D:\Gallery\images\1.jpg")),r"D:\Gallery\images\1.jpg");assert_eq!(webview_path(std::path::Path::new(r"\\?\UNC\server\Gallery\1.jpg")),r"\\server\Gallery\1.jpg");}
-    #[test]fn reject_untrusted_images(){assert!(image_url("https://upload.wikimedia.org/a.jpg").is_ok());assert!(image_url("https://upload.wikimedia.org.evil.test/a").is_err());assert!(image_url("file:///etc/passwd").is_err());}
+    #[test]fn reject_untrusted_images(){assert!(image_url("https://upload.wikimedia.org/a.jpg").is_ok());assert!(image_url("https://openaccess-cdn.clevelandart.org/1998.78.14/1998.78.14_print.jpg").is_ok());assert!(image_url("https://www.artic.edu/iiif/2/id/full/843,/0/default.jpg").is_ok());assert!(image_url("https://upload.wikimedia.org.evil.test/a").is_err());assert!(image_url("https://openaccess-cdn.clevelandart.org.evil.test/a_print.jpg").is_err());assert!(image_url("file:///etc/passwd").is_err());}
     #[test]fn endpoint_security(){assert!(endpoint("https://example.com/v1").is_ok());assert!(endpoint("http://127.0.0.1:11434/v1").is_ok());assert!(endpoint("http://example.com/v1").is_err());assert!(endpoint("https://user:secret@example.com").is_err());}
     fn fixture()->LibraryState {let root=std::env::temp_dir().join(format!("atelier-test-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));fs::create_dir_all(root.join("images")).unwrap();LibraryState{root,last:None}}
     fn data(label:&str)->String{json!({"version":1,"conversations":[],"saved":[],"label":label}).to_string()}

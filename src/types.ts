@@ -1,5 +1,6 @@
 export interface Artwork {
   id: number;
+  provider?: "cleveland" | "chicago";
   file: string;
   title: string;
   artist: string;
@@ -7,6 +8,8 @@ export interface Artwork {
   description: string;
   thumb: string;
   original: string;
+  medium?: string;
+  hd?: string;
   source: string;
   width: number;
   height: number;
@@ -22,6 +25,7 @@ export interface Message {
   query?: string;
   scope?: Settings["scope"];
   offset?: number;
+  providerOffsets?: Partial<Record<"commons" | "cleveland" | "chicago", number>>;
   error?: boolean;
   suggestions?: ArtistSuggestion[];
 }

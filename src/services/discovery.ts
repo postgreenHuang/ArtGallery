@@ -1,13 +1,12 @@
 import type { Artwork, Settings } from "../types";
-import { searchArt } from "./commons";
+import { providers, searchProvider } from "./artSearch";
 
 interface ArtistSeed {
   name: string;
   match: RegExp;
 }
 
-// One painter from each period keeps the discovery wall varied without
-// making a large batch of requests to Wikimedia on every refresh.
+// One painter from each period keeps the discovery wall varied.
 const periods: ArtistSeed[][] = [
   [
     { name: "Claude Monet", match: /monet/i },
@@ -60,27 +59,40 @@ export async function discoverArt(
   const artists: string[] = [];
   const nextOffsets = { ...offsets };
   let lastError: unknown;
-  for (const seed of seeds) {
+  for (const [index, seed] of seeds.entries()) {
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
-    try {
-      const result = await searchArt(seed.name, scope, offsets[seed.name] || 0, signal);
-      nextOffsets[seed.name] = result.offset || 0;
-      const matches = result.artworks.filter((art) =>
-        seed.match.test(`${art.artist} ${art.title} ${art.file}`),
-      );
-      const unique = matches.filter((art) => !artworks.some((a) => a.id === art.id));
-      const unseen = unique.filter((art) => !seenIds.has(art.id));
-      const notPrevious = unique.filter((art) => !previousIds.includes(art.id));
-      // Prefer new works across the session, then at least avoid an immediate repeat.
-      const pool = unseen.length ? unseen : notPrevious.length ? notPrevious : unique;
-      if (pool.length) {
-        artworks.push(pool[Math.floor(Math.random() * pool.length)]);
-        artists.push(seed.name);
+    // Rotate the first choice between independent collections. If a source
+    // is limited or has no matching painting, try another without hammering it.
+    const order = [...providers.slice(index % providers.length), ...providers.slice(0, index % providers.length)];
+    let fallback: Artwork | null = null;
+    let selected = false;
+    for (const provider of order) {
+      const key = `${provider}:${seed.name}`;
+      try {
+        const result = await searchProvider(provider, seed.name, scope, offsets[key] || 0, signal);
+        nextOffsets[key] = result.offset || 0;
+        const matches = result.artworks.filter((art) =>
+          seed.match.test(`${art.artist} ${art.title} ${art.file}`),
+        );
+        const unique = matches.filter((art) => !artworks.some((a) => a.id === art.id));
+        const unseen = unique.filter((art) => !seenIds.has(art.id));
+        const notPrevious = unique.filter((art) => !previousIds.includes(art.id));
+        if (unseen.length) {
+          artworks.push(unseen[Math.floor(Math.random() * unseen.length)]);
+          artists.push(seed.name);
+          selected = true;
+          break;
+        }
+        const oldPool = notPrevious.length ? notPrevious : unique;
+        if (!fallback && oldPool.length) fallback = oldPool[Math.floor(Math.random() * oldPool.length)];
+      } catch (error) {
+        if (signal.aborted) throw error;
+        lastError = error;
       }
-    } catch (error) {
-      if (signal.aborted) throw error;
-      lastError = error;
-      if (/429|请求过于频繁/.test(String(error))) break;
+    }
+    if (!selected && fallback) {
+      artworks.push(fallback);
+      artists.push(seed.name);
     }
   }
   if (!artworks.length && lastError) throw lastError;
@@ -89,8 +101,8 @@ export async function discoverArt(
     artists,
     offsets: nextOffsets,
     warning:
-      lastError && /429|请求过于频繁/.test(String(lastError))
-        ? "Wikimedia 暂时限制查询，已展示这次找到的部分作品；请稍后再刷新。"
+      lastError && artworks.length < seeds.length
+        ? "部分馆藏暂时不可用，已展示这次找到的作品；请稍后再刷新。"
         : "",
   };
 }

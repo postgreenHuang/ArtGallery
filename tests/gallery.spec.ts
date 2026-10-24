@@ -1,4 +1,12 @@
 import { test, expect } from "@playwright/test";
+test.beforeEach(async ({ page }) => {
+  await page.route("https://openaccess-api.clevelandart.org/**", (route) =>
+    route.fulfill({ json: { info: { total: 0 }, data: [] } }),
+  );
+  await page.route("https://api.artic.edu/**", (route) =>
+    route.fulfill({ json: { config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 0 }, data: [] } }),
+  );
+});
 const fixture = {
   pageid: 101,
   title: "File:Water lilies.jpg",
@@ -190,6 +198,39 @@ test("original download rate limit explains retry while thumbnails stay visible"
   allowOriginal = true;
   await page.getByRole("button", { name: "重试下载原图" }).click();
   await expect(page.getByRole("button", { name: "已在画架 · 原图" })).toBeVisible();
+});
+test("Wikimedia 429 still searches both museums and saves a museum painting", async ({ page }) => {
+  const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  await page.route("https://commons.wikimedia.org/**", (route) => route.fulfill({ status: 429, body: "limited" }));
+  await page.route("https://openaccess-api.clevelandart.org/**", (route) => route.fulfill({ json: {
+    info: { total: 1 }, data: [{
+      id: 101, title: "Water lilies - Cleveland", creators: [{ role: "artist", description: "Claude Monet" }],
+      share_license_status: "CC0", creation_date: "1916", type: "Painting", accession_number: "101",
+      images: {
+        web: { url: "https://openaccess-cdn.clevelandart.org/101/101_web.jpg", width: 900, height: 600 },
+        print: { url: "https://openaccess-cdn.clevelandart.org/101/101_print.jpg", width: 3400, height: 2200 },
+      },
+    }],
+  } }));
+  await page.route("https://api.artic.edu/**", (route) => route.fulfill({ json: {
+    config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 1 },
+    data: [{ id: 101, title: "Water lilies - Chicago", artist_display: "Claude Monet", is_public_domain: true, image_id: "2d484387-2509-5e8e-2c43-22f9981972eb" }],
+  } }));
+  await page.route("https://openaccess-cdn.clevelandart.org/**", (route) => route.fulfill({ contentType: "image/png", body: pixel }));
+  await page.route("https://www.artic.edu/iiif/**", (route) => route.fulfill({ contentType: "image/png", body: pixel }));
+  await page.goto("/");
+  await expect(page.locator(".collection-section").getByRole("heading", { name: "Water lilies - Cleveland" })).toBeVisible();
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("莫奈");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  const cmaCard = page.locator(".gallery-grid .art-card").filter({ hasText: "Water lilies - Cleveland" });
+  await expect(cmaCard).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Water lilies - Chicago" })).toBeVisible();
+  await cmaCard.getByRole("button", { name: "加入画架" }).click();
+  await expect(cmaCard.getByRole("button", { name: "已在画架 · 馆方高清 JPEG" })).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(page.getByRole("heading", { name: "Water lilies - Cleveland" })).toBeVisible();
 });
 test("discovery paginates and remembers viewed recommendations across refreshes", async ({ page }) => {
   const seen = new Set<string>();
