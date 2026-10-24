@@ -18,6 +18,7 @@ export async function readLibrary(): Promise<Library> {
     throw new Error("本地资料格式不兼容，请先备份资料。");
   return {
     ...parsed,
+    viewed: Array.isArray(parsed.viewed) ? parsed.viewed : [],
     settings: { ...defaultLibrary.settings, ...parsed.settings },
   };
 }

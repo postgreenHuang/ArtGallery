@@ -51,25 +51,28 @@ export async function discoverArt(
   scope: Settings["scope"],
   previousArtists: string[],
   previousIds: number[],
+  seenIds: ReadonlySet<number>,
+  offsets: Record<string, number>,
   signal: AbortSignal,
-): Promise<{ artworks: Artwork[]; artists: string[]; warning: string }> {
+): Promise<{ artworks: Artwork[]; artists: string[]; offsets: Record<string, number>; warning: string }> {
   const seeds = chooseDiscoveryArtists(previousArtists);
   const artworks: Artwork[] = [];
   const artists: string[] = [];
+  const nextOffsets = { ...offsets };
   let lastError: unknown;
   for (const seed of seeds) {
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
     try {
-      const result = await searchArt(seed.name, scope, 0, signal);
+      const result = await searchArt(seed.name, scope, offsets[seed.name] || 0, signal);
+      nextOffsets[seed.name] = result.offset || 0;
       const matches = result.artworks.filter((art) =>
         seed.match.test(`${art.artist} ${art.title} ${art.file}`),
       );
-      const available = matches.filter(
-        (art) =>
-          !previousIds.includes(art.id) &&
-          !artworks.some((a) => a.id === art.id),
-      );
-      const pool = available.length ? available : matches;
+      const unique = matches.filter((art) => !artworks.some((a) => a.id === art.id));
+      const unseen = unique.filter((art) => !seenIds.has(art.id));
+      const notPrevious = unique.filter((art) => !previousIds.includes(art.id));
+      // Prefer new works across the session, then at least avoid an immediate repeat.
+      const pool = unseen.length ? unseen : notPrevious.length ? notPrevious : unique;
       if (pool.length) {
         artworks.push(pool[Math.floor(Math.random() * pool.length)]);
         artists.push(seed.name);
@@ -84,6 +87,7 @@ export async function discoverArt(
   return {
     artworks,
     artists,
+    offsets: nextOffsets,
     warning:
       lastError && /429|请求过于频繁/.test(String(lastError))
         ? "Wikimedia 暂时限制查询，已展示这次找到的部分作品；请稍后再刷新。"

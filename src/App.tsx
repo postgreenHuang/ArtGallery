@@ -249,7 +249,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState("");
   const [persistError, setPersistError] = useState("");
-  const [view, setView] = useState<"discover" | "easel" | "history" | "chat">(
+  const [view, setView] = useState<"discover" | "easel" | "viewed" | "history" | "chat">(
     "discover",
   );
   const [active, setActive] = useState<string | null>(null);
@@ -263,6 +263,9 @@ export default function App() {
   const [discoverError, setDiscoverError] = useState("");
   const discoverRequest = useRef<AbortController | null>(null);
   const discoverArtists = useRef<string[]>([]);
+  const discoverSeen = useRef(new Set<number>());
+  const discoverOffsets = useRef<Record<string, number>>({});
+  const discoverScope = useRef(library.settings.scope);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState("");
   const request = useRef<AbortController | null>(null);
@@ -339,6 +342,16 @@ export default function App() {
       void document.exitFullscreen().catch(() => {});
     browserFullscreen.current = false;
   }, []);
+  function rememberViewed(art: Artwork) {
+    setLibrary((current) => ({
+      ...current,
+      viewed: [art, ...current.viewed.filter((item) => item.id !== art.id)].slice(0, 50),
+    }));
+  }
+  function viewArtwork(art: Artwork) {
+    rememberViewed(art);
+    setDetail(art);
+  }
   useEffect(() => {
     const changed = () => {
       if (!document.fullscreenElement && browserFullscreen.current)
@@ -351,7 +364,7 @@ export default function App() {
     viewerFromDetail.current = fromDetail;
     if (arts) setViewerArts(arts);
     else if (!viewerArts.some((item) => item.id === art.id)) setViewerArts([art]);
-    setDetail(art);
+    viewArtwork(art);
     setContext(null);
     setViewerOpen(true);
     if (desktop)
@@ -424,6 +437,12 @@ export default function App() {
   }, [current?.messages.length, busy, view]);
   useEffect(() => {
     if (!ready) return;
+    if (discoverScope.current !== library.settings.scope) {
+      discoverScope.current = library.settings.scope;
+      discoverArtists.current = [];
+      discoverSeen.current.clear();
+      discoverOffsets.current = {};
+    }
     void refreshDiscovery();
     return () => discoverRequest.current?.abort();
   }, [ready, library.settings.scope]);
@@ -438,6 +457,8 @@ export default function App() {
         library.settings.scope,
         discoverArtists.current,
         discover.map((art) => art.id),
+        discoverSeen.current,
+        discoverOffsets.current,
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -445,6 +466,8 @@ export default function App() {
         setDiscoverError("这组画家暂时没有可展示的作品，请再刷新一次。");
       } else {
         discoverArtists.current = result.artists;
+        discoverOffsets.current = result.offsets;
+        result.artworks.forEach((art) => discoverSeen.current.add(art.id));
         setDiscover(result.artworks);
         setDiscoverError(result.warning);
       }
@@ -1141,6 +1164,16 @@ export default function App() {
             我的画架<span>{String(library.saved.length).padStart(2, "0")}</span>
           </button>
           <button
+            className={view === "viewed" ? "active" : ""}
+            onClick={() => {
+              setView("viewed");
+              setFilter("");
+            }}
+          >
+            <Clock3 size={18} />
+            最近看过<span>{String(library.viewed.length).padStart(2, "0")}</span>
+          </button>
+          <button
             className={view === "history" ? "active" : ""}
             onClick={() => {
               setView("history");
@@ -1240,6 +1273,8 @@ export default function App() {
             <span className="crumb-slash">/</span>
             {view === "easel"
               ? "我的画架"
+              : view === "viewed"
+                ? "最近看过"
               : view === "history"
                 ? "往日对话"
                 : view === "chat"
@@ -1429,6 +1464,39 @@ export default function App() {
               )}
             </>
           )}
+          {view === "viewed" && (
+            <>
+              <span className="eyebrow">RECENTLY VIEWED</span>
+              <div className="page-heading">
+                <div>
+                  <h1>最近看过<span className="count">{library.viewed.length}</span></h1>
+                  <p>最近打开的作品保存在本机，再看一眼也很方便。</p>
+                </div>
+              </div>
+              {library.viewed.length ? (
+                <>
+                  <label className="filter">
+                    <Search size={17} />
+                    <input
+                      placeholder="寻找看过的作品或艺术家"
+                      value={filter}
+                      onChange={(event) => setFilter(event.target.value)}
+                    />
+                  </label>
+                  {cards(library.viewed.filter((art) =>
+                    `${art.title} ${art.artist}`.toLowerCase().includes(filter.toLowerCase()),
+                  ))}
+                </>
+              ) : (
+                <div className="empty-state large">
+                  <ImageIcon size={38} />
+                  <h2>还没有浏览记录</h2>
+                  <p>打开画作后，就能在这里找回最近看过的作品。</p>
+                  <button onClick={() => setView("discover")}>去发现艺术 <ArrowRight size={16} /></button>
+                </div>
+              )}
+            </>
+          )}
           {view === "history" && (
             <>
               <span className="eyebrow">CONVERSATIONS, COLLECTED</span>
@@ -1589,7 +1657,7 @@ export default function App() {
                   className="artwork-chat-context"
                   onClick={() => {
                     setViewerArts([current.artwork!]);
-                    setDetail(current.artwork!);
+                    viewArtwork(current.artwork!);
                   }}
                 >
                   <ArtImage
@@ -1739,7 +1807,7 @@ export default function App() {
           </button>
           <button
             onClick={() => {
-              setDetail(context.art);
+              viewArtwork(context.art);
               setContext(null);
             }}
           >
@@ -1920,21 +1988,21 @@ export default function App() {
         <FullscreenViewer
           key={detail.id}
           art={detail}
-          saved={
-            isOriginalLocal(savedFor(detail.id)?.local)
-              ? savedFor(detail.id)
-              : undefined
-          }
+          saved={savedFor(detail.id)}
+          originalLocal={isOriginalLocal(savedFor(detail.id)?.local) ? savedFor(detail.id)?.local : undefined}
+          preferCached={view === "easel"}
+          saving={saving.includes(detail.id)}
+          onSave={() => void save(detail)}
           position={Math.max(0, viewerArts.findIndex((item) => item.id === detail.id))}
           total={viewerArts.length}
           onPrevious={() => {
             const index = viewerArts.findIndex((item) => item.id === detail.id);
-            if (index > 0) setDetail(viewerArts[index - 1]);
+            if (index > 0) viewArtwork(viewerArts[index - 1]);
           }}
           onNext={() => {
             const index = viewerArts.findIndex((item) => item.id === detail.id);
             if (index >= 0 && index < viewerArts.length - 1)
-              setDetail(viewerArts[index + 1]);
+              viewArtwork(viewerArts[index + 1]);
           }}
           onClose={closeViewer}
         />

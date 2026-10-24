@@ -56,12 +56,14 @@ export interface Library {
   version: 1;
   conversations: Conversation[];
   saved: SavedArtwork[];
+  viewed: Artwork[];
   settings: Settings;
 }
 export const defaultLibrary: Library = {
   version: 1,
   conversations: [],
   saved: [],
+  viewed: [],
   settings: {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",

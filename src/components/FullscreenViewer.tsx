@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { Bookmark, ChevronLeft, ChevronRight, LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
 import type { Artwork, SavedArtwork } from "../types";
 import { sizedImage } from "../services/commons";
 import {
@@ -28,19 +28,27 @@ const clamp = (value: number, maximum = 16) =>
 export default function FullscreenViewer({
   art,
   saved,
+  originalLocal,
+  preferCached,
+  saving,
   position,
   total,
   onPrevious,
   onNext,
   onClose,
+  onSave,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
+  originalLocal?: string;
+  preferCached: boolean;
+  saving: boolean;
   position: number;
   total: number;
   onPrevious: () => void;
   onNext: () => void;
   onClose: () => void;
+  onSave: () => void;
 }) {
   const [source, setSource] = useState({
     url: art.thumb,
@@ -95,22 +103,47 @@ export default function FullscreenViewer({
     setAvailable({ preview: art.thumb });
     setSelected("preview");
     desired.current = "preview";
-    cacheArtwork(art.id, art.thumb, "preview")
-      .then(localImage)
-      .then((url) => {
+    const load = async () => {
+      if (preferCached) {
+        for (const variant of ["original", "hd", "medium", "preview"] as const) {
+          try {
+            const local = (variant === "original" ? originalLocal : undefined) ||
+              await cachedArtwork(art.id, variant);
+            if (!local) continue;
+            const url = await localImage(local);
+            if (!alive) {
+              if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+              return;
+            }
+            if (rememberUrl(url)) {
+              setAvailable((current) => ({ ...current, [variant]: url }));
+              if (desired.current === "preview") {
+                desired.current = variant;
+                setSelected(variant);
+                setSource({ url, variant });
+              }
+            }
+            return;
+          } catch {
+            // A stale cache entry should not prevent using a lower resolution.
+          }
+        }
+      }
+      try {
+        const url = await localImage(await cacheArtwork(art.id, art.thumb, "preview"));
         if (!alive) {
           if (url.startsWith("blob:")) URL.revokeObjectURL(url);
         } else if (rememberUrl(url)) {
           setAvailable((current) => ({ ...current, preview: url }));
-          if (desired.current === "preview")
-            setSource({ url, variant: "preview" });
+          if (desired.current === "preview") setSource({ url, variant: "preview" });
         }
-      })
-      .catch(() => {});
+      } catch { /* The remote thumbnail remains available as a fallback. */ }
+    };
+    void load();
     return () => {
       alive = false;
     };
-  }, [art.id, art.thumb]);
+  }, [art.id, art.thumb, originalLocal, preferCached]);
 
   async function selectResolution(variant: ViewerVariant) {
     if (pending.current && !available[variant] && variant !== "preview") return;
@@ -129,7 +162,7 @@ export default function FullscreenViewer({
     setProgress(null);
     try {
       let local =
-        (variant === "original" ? saved?.local : undefined) ||
+        (variant === "original" ? originalLocal : undefined) ||
         (await cachedArtwork(art.id, variant));
       if (!local) {
         const url =
@@ -361,7 +394,7 @@ export default function FullscreenViewer({
                   {variantLabel[variant]}
                   {variant === "preview"
                     ? " · 当前可用"
-                    : available[variant] || (variant === "original" && saved)
+                    : available[variant] || (variant === "original" && originalLocal)
                       ? " · 已缓存"
                       : " · 选择后下载"}
                 </option>
@@ -402,6 +435,16 @@ export default function FullscreenViewer({
             title="重置视图"
           >
             <RotateCcw size={17} />
+          </button>
+          <button
+            className="viewer-save"
+            onClick={onSave}
+            disabled={saving || !!originalLocal}
+            aria-label={saving ? "正在加入画架" : originalLocal ? "已在画架 · 原图" : saved ? "重试下载原图" : "加入画架"}
+            title={saved && !originalLocal ? "已在画架，点击重试下载原图" : undefined}
+          >
+            {saving ? <LoaderCircle className="spin" size={17} /> : <Bookmark size={17} fill={saved ? "currentColor" : "none"} />}
+            <span>{saving ? "收藏中…" : originalLocal ? "已收藏" : saved ? "重试原图" : "加入画架"}</span>
           </button>
           <button
             ref={close}

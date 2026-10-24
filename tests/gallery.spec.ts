@@ -58,6 +58,13 @@ test("fullscreen browses artworks from the same search result", async ({ page })
   await expect(page.locator(".viewer-position")).toHaveText("2 / 2");
   await page.keyboard.press("ArrowLeft");
   await expect(page.getByRole("dialog", { name: "全屏欣赏 Water lilies" })).toBeVisible();
+  await page.getByRole("button", { name: "退出全屏" }).click();
+  await page.getByRole("button", { name: /最近看过/ }).click();
+  await expect(page.locator(".gallery-grid .art-card")).toHaveCount(2);
+  await expect(page.locator(".gallery-grid .art-card").first()).toContainText("Water lilies");
+  await page.reload();
+  await page.getByRole("button", { name: /最近看过/ }).click();
+  await expect(page.locator(".gallery-grid .art-card")).toHaveCount(2);
 });
 test("discovery refresh rotates artists and similar opens a seeded inspiration chat", async ({
   page,
@@ -183,6 +190,77 @@ test("original download rate limit explains retry while thumbnails stay visible"
   allowOriginal = true;
   await page.getByRole("button", { name: "重试下载原图" }).click();
   await expect(page.getByRole("button", { name: "已在画架 · 原图" })).toBeVisible();
+});
+test("discovery paginates and remembers viewed recommendations across refreshes", async ({ page }) => {
+  const seen = new Set<string>();
+  const offsets: number[] = [];
+  const artistIds = new Map<string, number>();
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const name = (params.get("gsrsearch") || "Claude Monet").split(' "Google Art Project"')[0].replace(/ filetype:bitmap$/, "");
+    const offset = Number(params.get("gsroffset") || 0);
+    if (!artistIds.has(name)) artistIds.set(name, artistIds.size + 1);
+    offsets.push(offset);
+    return route.fulfill({ json: {
+      query: { pages: [{
+        ...fixture,
+        pageid: artistIds.get(name)! * 10000 + offset,
+        title: `File:${name} ${offset}.jpg`,
+        imageinfo: [{ ...fixture.imageinfo[0], extmetadata: {
+          ...fixture.imageinfo[0].extmetadata,
+          ObjectName: { value: `${name} ${offset}` },
+          Artist: { value: name },
+        } }],
+      }] },
+      continue: { gsroffset: offset + 12 },
+    } });
+  });
+  await page.goto("/");
+  for (let turn = 0; turn < 4; turn++) {
+    await expect(page.locator(".collection-section .art-card")).toHaveCount(5);
+    const titles = await page.locator(".collection-section .art-caption h3").allTextContents();
+    for (const title of titles) {
+      expect(seen.has(title)).toBe(false);
+      seen.add(title);
+    }
+    if (turn < 3) {
+      await page.getByRole("button", { name: "换一组画作" }).click();
+      await expect(page.getByRole("button", { name: "换一组画作" })).toBeEnabled();
+    }
+  }
+  expect(offsets.some((offset) => offset > 0)).toBe(true);
+});
+test("fullscreen collection survives a rate limit and retries without leaving the viewer", async ({ page }) => {
+  let allowOriginal = false;
+  let originalRequests = 0;
+  const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) =>
+    route.fulfill({ json: { query: { pages: [fixture] } } }),
+  );
+  await page.route("https://thumb.wikimedia.org/**", (route) =>
+    route.fulfill({ contentType: "image/png", body: pixel }),
+  );
+  await page.route("https://upload.wikimedia.org/**", (route) => {
+    originalRequests++;
+    return route.fulfill(allowOriginal
+      ? { contentType: "image/png", body: pixel }
+      : { status: 429, body: "Too many requests" });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  const viewer = page.getByRole("dialog", { name: "全屏欣赏 Water lilies" });
+  await viewer.getByRole("button", { name: "加入画架" }).click();
+  await expect(viewer.getByRole("button", { name: "重试下载原图" })).toBeVisible();
+  await expect(page.getByText("Wikimedia 暂时限制下载（HTTP 429）", { exact: false })).toBeVisible();
+  allowOriginal = true;
+  await viewer.getByRole("button", { name: "重试下载原图" }).click();
+  await expect(viewer.getByRole("button", { name: "已在画架 · 原图" })).toBeVisible();
+  await viewer.getByRole("button", { name: "退出全屏" }).click();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  const beforeOpen = originalRequests;
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await expect(page.locator(".viewer-resolution")).toContainText("已显示原图");
+  expect(originalRequests).toBe(beforeOpen);
 });
 test("clear light and warm paper themes save and render distinct palettes", async ({ page }) => {
   await page.route("https://commons.wikimedia.org/w/api.php?**", (route) =>
