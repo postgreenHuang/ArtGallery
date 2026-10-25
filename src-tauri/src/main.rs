@@ -278,16 +278,63 @@ async fn ai_plan(base_url:String,model:String,key:String,messages:Value,state:St
     }
     Err("AI 输出长度不足，未返回可用正文".into())
 }
-fn main(){tauri::Builder::default().plugin(tauri_plugin_opener::init()).setup(|app|{
+fn remember_recovered_location(pointer:&Path,root:&Path)->Result<(),String>{
+    let backup=pointer.with_file_name("location.previous.json");
+    if !backup.exists(){fs::copy(pointer,&backup).map_err(err)?;}
+    atomic_write(pointer,serde_json::to_string(root).map_err(err)?.as_bytes())
+}
+fn recover_library_location(pointer:&Path,missing:&Path,default:&Path)->Result<PathBuf,String>{
+    loop {
+        let choice=rfd::MessageDialog::new()
+            .set_title("拾色 · 资料库目录不可用")
+            .set_level(rfd::MessageLevel::Warning)
+            .set_description(format!("找不到之前的资料库：{}\n\n选“是”可指定已有资料库文件夹；选“否”使用本机资料库：{}；选“取消”退出并等待同步完成。不会删除原资料。",webview_path(missing),webview_path(default)))
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+        let root=match choice {
+            rfd::MessageDialogResult::Yes=>{
+                let Some(folder)=rfd::FileDialog::new().set_title("选择含 library.json 的已有资料库").pick_folder() else {continue};
+                let data=match fs::read_to_string(folder.join("library.json")){
+                    Ok(data)=>data,
+                    Err(_)=>{rfd::MessageDialog::new().set_title("不是有效的资料库").set_description("所选文件夹缺少 library.json，请重新选择。").show();continue}
+                };
+                if let Err(error)=validate_library(&data){rfd::MessageDialog::new().set_title("资料库格式不兼容").set_description(error).show();continue}
+                folder
+            },
+            rfd::MessageDialogResult::No=>{fs::create_dir_all(default).map_err(err)?;default.to_path_buf()},
+            _=>return Err("资料库恢复已取消".into()),
+        };
+        if !root.is_dir(){continue}
+        remember_recovered_location(pointer,&root)?;
+        return Ok(root)
+    }
+}
+fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init()).setup(|app|{
     let config=app.path().app_config_dir()?;let pointer=config.join("location.json");
-    let root:PathBuf=if pointer.exists(){let root:PathBuf=serde_json::from_str(&fs::read_to_string(pointer)?)?;if !root.is_dir(){return Err(format!("资料库目录不可用，请等待同步或恢复该目录：{}",root.display()).into())}root}else{app.path().app_data_dir()?.join("Library")};
+    let default=app.path().app_data_dir()?.join("Library");
+    let root:PathBuf=if pointer.exists(){let configured:PathBuf=serde_json::from_str(&fs::read_to_string(&pointer)?)?;if configured.is_dir(){configured}else{recover_library_location(&pointer,&configured,&default)?}}else{default};
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
     app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!()).expect("启动拾色失败");}
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
+    if let Err(error)=result{if !error.to_string().contains("资料库恢复已取消"){
+        rfd::MessageDialog::new().set_title("拾色启动失败").set_level(rfd::MessageLevel::Error).set_description(error.to_string()).show();
+    }}
+}
 
 #[cfg(test)]
 mod tests {use super::*;
+    #[test]fn recovered_location_keeps_original_pointer(){
+        let state=fixture();
+        let pointer=state.root.join("location.json");
+        let old=state.root.join("deleted-gallery");
+        let replacement=state.root.join("new-gallery");
+        fs::write(&pointer,serde_json::to_string(&old).unwrap()).unwrap();
+        remember_recovered_location(&pointer,&replacement).unwrap();
+        assert_eq!(serde_json::from_str::<PathBuf>(&fs::read_to_string(&pointer).unwrap()).unwrap(),replacement);
+        assert_eq!(serde_json::from_str::<PathBuf>(&fs::read_to_string(state.root.join("location.previous.json")).unwrap()).unwrap(),old);
+        fs::remove_dir_all(state.root).unwrap();
+    }
     #[test]fn commons_cooldown_prevents_immediate_retries(){
         let until=Mutex::new(Some(Instant::now()+Duration::from_secs(90)));
         assert!(check_cooldown(&until,"查询").unwrap_err().contains("2 分钟"));
