@@ -32,6 +32,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import FullscreenViewer from "./components/FullscreenViewer";
+import FloatingArtwork from "./components/FloatingArtwork";
 import type {
   Artwork,
   Conversation,
@@ -350,6 +351,7 @@ export default function App() {
   const [saving, setSaving] = useState<number[]>([]);
   const [detail, setDetail] = useState<Artwork | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [floatingArtworkOpen, setFloatingArtworkOpen] = useState(false);
   const [viewerArts, setViewerArts] = useState<Artwork[]>([]);
   const viewerFromDetail = useRef(false);
   const browserFullscreen = useRef(false);
@@ -367,6 +369,7 @@ export default function App() {
   const [removeArt, setRemoveArt] = useState<Artwork | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const current = library.conversations.find((c) => c.id === active);
+  useEffect(() => setFloatingArtworkOpen(false), [view, active]);
   useEffect(() => {
     readLibrary()
       .then((l) => {
@@ -1373,7 +1376,7 @@ export default function App() {
             </button>
           </div>
         )}
-        <div className={`page-content ${view === "chat" ? "chat-page" : ""}`}>
+        <div className={`page-content ${view === "chat" ? "chat-page" : ""} ${floatingArtworkOpen && current?.kind === "artwork" ? "floating-open" : ""}`}>
           {view === "discover" && (
             <>
               <div className="eyebrow">A LITTLE ART, EVERY DAY</div>
@@ -1714,17 +1717,15 @@ export default function App() {
               {current?.kind === "artwork" && current.artwork && (
                 <button
                   className="artwork-chat-context"
-                  onClick={() => {
-                    setViewerArts([current.artwork!]);
-                    viewArtwork(current.artwork!);
-                  }}
+                  onClick={() => setFloatingArtworkOpen(true)}
+                  aria-label={`打开 ${current.artwork.title} 的图片浮窗`}
                 >
                   <ArtImage
                     art={current.artwork}
                     saved={savedFor(current.artwork.id)}
                   />
                   <span>
-                    <small>正在讲解的作品</small>
+                    <small>正在讲解的作品 · 点击打开可拖动图片浮窗</small>
                     <strong>{current.artwork.title}</strong>
                     <em>
                       {current.artwork.artist} · {current.artwork.date}
@@ -1761,7 +1762,12 @@ export default function App() {
                       <small>{m.error ? "连接遇到问题" : "CURATOR"}</small>
                     </div>
                   )}
-                  <p className="message-text">{m.text}</p>
+                  <p
+                    className="message-text"
+                    style={current?.kind === "artwork" && m.role === "assistant" && !m.error
+                      ? { fontSize: `${library.settings.explanationFontSize}px` }
+                      : undefined}
+                  >{m.text}</p>
                   {!!m.suggestions?.length && (
                     <div
                       className="artist-suggestions"
@@ -1854,6 +1860,13 @@ export default function App() {
           )}
         </div>
       </main>
+      {view === "chat" && current?.kind === "artwork" && current.artwork && floatingArtworkOpen && (
+        <FloatingArtwork
+          art={current.artwork}
+          originalLocal={isOriginalLocal(savedFor(current.artwork.id)?.local) ? savedFor(current.artwork.id)?.local : undefined}
+          onClose={() => setFloatingArtworkOpen(false)}
+        />
+      )}
       {context && (
         <div
           className="context-menu"
@@ -2405,6 +2418,19 @@ function SettingsDialog({
                 <option value="warm">暖纸色 · 柔和米黄</option>
                 <option value="dark">深色 · 夜间观画</option>
                 <option value="system">跟随系统</option>
+              </select>
+            </label>
+            <label>
+              作品讲解文字大小
+              <select
+                value={draft.explanationFontSize}
+                onChange={(event) => setDraft({ ...draft, explanationFontSize: Number(event.target.value) })}
+              >
+                <option value={14}>小 · 14px</option>
+                <option value={16}>标准 · 16px</option>
+                <option value={18}>较大 · 18px</option>
+                <option value={20}>大 · 20px</option>
+                <option value={22}>特大 · 22px</option>
               </select>
             </label>
             <p className="field-hint">

@@ -895,6 +895,11 @@ main {
 .chat-page {
   padding-bottom: 185px;
 }
+@media (min-width: 1300px) {
+  .chat-page.floating-open {
+    margin-right: 470px;
+  }
+}
 .chat-heading {
   border-bottom: 1px solid var(--border);
   padding-bottom: 23px;
@@ -959,6 +964,95 @@ main {
 }
 .artwork-chat-context > svg:last-child {
   color: #89967c;
+}
+.floating-artwork {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(580px, calc(100dvh - 16px));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 18px 65px #20271e65;
+}
+.floating-artwork-handle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 7px 10px 7px 13px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+.floating-artwork-handle strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 15px var(--serif);
+}
+.floating-artwork-handle button {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.floating-artwork-handle button:hover,
+.floating-artwork-footer button:hover {
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.floating-artwork-image {
+  min-height: 100px;
+  height: min(460px, calc(100dvh - 120px));
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  background: color-mix(in srgb, var(--green) 10%, var(--paper));
+}
+.floating-artwork-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.floating-artwork-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 13px;
+  font-size: 11px;
+}
+.floating-artwork-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  color: var(--green);
+  border-radius: 3px;
+}
+.floating-artwork-footer button:disabled {
+  opacity: 0.5;
+}
+.floating-artwork-error {
+  margin: 0;
+  padding: 0 13px 10px;
+  font-size: 11px;
+  color: #ae684b;
 }
 .chat-welcome {
   text-align: center;

@@ -55,6 +55,7 @@ export interface Settings {
   useAi: boolean;
   scope: "google" | "commons";
   theme: "light" | "contrast" | "warm" | "dark" | "system";
+  explanationFontSize: number;
 }
 export interface Library {
   version: 1;
@@ -74,5 +75,6 @@ export const defaultLibrary: Library = {
     useAi: false,
     scope: "google",
     theme: "light",
+    explanationFontSize: 16,
   },
 };

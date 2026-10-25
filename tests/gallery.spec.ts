@@ -449,7 +449,7 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
     page.getByRole("dialog", { name: "全屏欣赏 Water lilies" }),
   ).toBeVisible();
   await expect(page.locator(".viewer-resolution")).toContainText(
-    "已显示缩略图 · 1 × 1px",
+    "已显示原图 · 1 × 1px",
   );
   await page.getByRole("button", { name: "以 1:1 原始像素显示" }).click();
   await expect(page.locator(".viewer-pixel-scale")).toHaveText("当前图像 100%");
@@ -512,6 +512,28 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await expect(page.getByText("时代背景：馆藏标注创作于 1916", { exact: false })).toBeVisible();
   await expect(page.getByText("作者：馆藏署名为 Claude Monet", { exact: false })).toBeVisible();
   await expect(page.getByText("技法与风格流派：现有馆藏资料不足", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "打开 Water lilies 的图片浮窗" }).click();
+  const floating = page.getByRole("dialog", { name: "作品浮窗 Water lilies" });
+  await expect(floating).toBeVisible();
+  await expect(floating.locator("img")).toHaveJSProperty("naturalWidth", 1);
+  await expect(page.getByText("时代背景：馆藏标注创作于 1916", { exact: false })).toBeVisible();
+  await page.screenshot({ path: "test-results/floating-artwork.png" });
+  const handle = floating.getByLabel("拖动图片浮窗");
+  const before = await floating.boundingBox();
+  const grip = await handle.boundingBox();
+  if (!before || !grip) throw new Error("图片浮窗未渲染");
+  await page.mouse.move(grip.x + 30, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(grip.x - 110, grip.y + grip.height / 2 + 80, { steps: 6 });
+  await page.mouse.up();
+  const after = await floating.boundingBox();
+  expect(after!.x).toBeLessThan(before.x - 80);
+  expect(after!.y).toBeGreaterThan(before.y + 50);
+  await floating.getByRole("button", { name: "关闭图片浮窗" }).click();
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await page.getByLabel("作品讲解文字大小").selectOption("20");
+  await page.getByRole("button", { name: "保存偏好" }).click();
+  await expect(page.locator(".message.assistant .message-text").first()).toHaveCSS("font-size", "20px");
   await page
     .getByRole("textbox", { name: "向策展人描述想看的画作" })
     .fill("画面用了什么技法？");
@@ -528,6 +550,7 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await page.getByRole("button", { name: /往日对话/ }).click();
   await page.getByRole("tab", { name: /作品讲解/ }).click();
   await page.locator(".history-list article > button:first-child").click();
+  await expect(page.locator(".message.assistant .message-text").first()).toHaveCSS("font-size", "20px");
   await expect(
     page.getByText("画面用了什么技法？", { exact: true }),
   ).toBeVisible();
