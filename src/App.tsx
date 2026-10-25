@@ -2049,7 +2049,6 @@ export default function App() {
           art={detail}
           saved={savedFor(detail.id)}
           originalLocal={isOriginalLocal(savedFor(detail.id)?.local) ? savedFor(detail.id)?.local : undefined}
-          preferCached={view === "easel"}
           saving={saving.includes(detail.id)}
           onSave={() => void save(detail)}
           position={Math.max(0, viewerArts.findIndex((item) => item.id === detail.id))}

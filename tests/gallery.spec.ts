@@ -692,6 +692,9 @@ test("fullscreen loads selectable sizes only on demand and dark theme persists",
   ).length;
   await page.getByRole("button", { name: "退出全屏" }).click();
   await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await expect(page.locator(".viewer-resolution")).toContainText(
+    "已显示原图 · 1600 × 1200px",
+  );
   await page
     .getByRole("combobox", { name: "选择画作分辨率" })
     .selectOption("medium");

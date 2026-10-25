@@ -29,7 +29,6 @@ export default function FullscreenViewer({
   art,
   saved,
   originalLocal,
-  preferCached,
   saving,
   position,
   total,
@@ -41,7 +40,6 @@ export default function FullscreenViewer({
   art: Artwork;
   saved?: SavedArtwork;
   originalLocal?: string;
-  preferCached: boolean;
   saving: boolean;
   position: number;
   total: number;
@@ -106,29 +104,27 @@ export default function FullscreenViewer({
     setSelected("preview");
     desired.current = "preview";
     const load = async () => {
-      if (preferCached) {
-        for (const variant of ["original", "hd", "medium", "preview"] as const) {
-          try {
-            const local = (variant === "original" ? originalLocal : undefined) ||
-              await cachedArtwork(art.id, variant);
-            if (!local) continue;
-            const url = await localImage(local);
-            if (!alive) {
-              if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-              return;
-            }
-            if (rememberUrl(url)) {
-              setAvailable((current) => ({ ...current, [variant]: url }));
-              if (desired.current === "preview") {
-                desired.current = variant;
-                setSelected(variant);
-                setSource({ url, variant });
-              }
-            }
+      for (const variant of ["original", "hd", "medium", "preview"] as const) {
+        try {
+          const local = (variant === "original" ? originalLocal : undefined) ||
+            await cachedArtwork(art.id, variant);
+          if (!local) continue;
+          const url = await localImage(local);
+          if (!alive) {
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
             return;
-          } catch {
-            // A stale cache entry should not prevent using a lower resolution.
           }
+          if (rememberUrl(url)) {
+            setAvailable((current) => ({ ...current, [variant]: url }));
+            if (desired.current === "preview") {
+              desired.current = variant;
+              setSelected(variant);
+              setSource({ url, variant });
+            }
+          }
+          return;
+        } catch {
+          // A stale cache entry should not prevent using a lower resolution.
         }
       }
       try {
@@ -145,7 +141,7 @@ export default function FullscreenViewer({
     return () => {
       alive = false;
     };
-  }, [art.id, art.thumb, originalLocal, preferCached]);
+  }, [art.id, art.thumb, originalLocal]);
 
   async function selectResolution(variant: ViewerVariant) {
     if (pending.current && !available[variant] && variant !== "preview") return;
