@@ -62,6 +62,8 @@ export interface Message {
   originalRequest?: string;
   reviewCompleted?: boolean;
   reviewPending?: boolean;
+  pageReviewPending?: boolean;
+  pendingPageArtworks?: Artwork[];
   searchQueries?: string[];
   rejectedArtworks?: Artwork[];
   rejectedWebResults?: WebResult[];

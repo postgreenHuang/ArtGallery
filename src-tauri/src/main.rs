@@ -477,6 +477,25 @@ mod tests {use super::*;
         assert!(image_url("https://www.artic.edu/iiif/2/id/full/843,/0/default.jpg?utm_source=commons.wikimedia.org").is_err());
     }
     #[test]fn endpoint_security(){assert!(endpoint("https://example.com/v1").is_ok());assert!(endpoint("http://127.0.0.1:11434/v1").is_ok());assert!(endpoint("http://example.com/v1").is_err());assert!(endpoint("https://user:secret@example.com").is_err());}
+    #[test]fn source_page_rejects_private_targets_and_unsafe_redirects(){
+        for url in ["http://example.com/art", "https://127.0.0.1/art", "https://127.1/art", "https://2130706433/art",
+            "https://10.0.0.1/art", "https://[::1]/art", "https://museum.local/art", "https://museum.internal/art",
+            "https://user:pass@example.com/art", "https://example.com:8443/art", "file:///etc/passwd"] {
+            assert!(source_page_url(url).is_err(),"accepted unsafe source: {url}");
+        }
+        let base=source_page_url("https://museum.example/art/1").unwrap();
+        assert_eq!(source_page_url(base.join("../art/2").unwrap().as_str()).unwrap().as_str(),"https://museum.example/art/2");
+        assert!(source_page_url(base.join("http://127.0.0.1/admin").unwrap().as_str()).is_err());
+        assert!(source_page_url(base.join("https://user@museum.example/private").unwrap().as_str()).is_err());
+    }
+    #[test]fn source_page_dns_rejects_non_public_addresses(){
+        for ip in ["127.0.0.1","10.1.2.3","172.16.0.1","192.168.1.1","169.254.1.1","100.64.0.1",
+            "198.18.0.1","192.0.0.1","224.0.0.1","::1","fe80::1","fc00::1","2001:db8::1","2002:c000:0201::1"] {
+            assert!(!public_page_ip(ip.parse().unwrap()),"accepted non-public DNS address: {ip}");
+        }
+        assert!(public_page_ip("8.8.8.8".parse().unwrap()));
+        assert!(public_page_ip("2001:4860:4860::8888".parse().unwrap()));
+    }
     fn fixture()->LibraryState {let root=std::env::temp_dir().join(format!("atelier-test-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));fs::create_dir_all(root.join("images")).unwrap();LibraryState{root,last:None}}
     fn data(label:&str)->String{json!({"version":1,"conversations":[],"saved":[],"label":label}).to_string()}
     #[test]fn backup_and_conflict_protection(){let mut s=fixture();save_snapshot(&mut s,data("first")).unwrap();save_snapshot(&mut s,data("second")).unwrap();assert_eq!(fs::read_to_string(s.root.join("library.backup.json")).unwrap(),data("first"));fs::write(s.root.join("library.json"),data("remote")).unwrap();assert!(save_snapshot(&mut s,data("local")).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("remote"));fs::remove_dir_all(s.root).unwrap();}

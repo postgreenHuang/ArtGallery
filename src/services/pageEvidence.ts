@@ -10,9 +10,14 @@ export function extractPageText(html: string): { title: string; text: string } {
   // Keep parsing inert and omit scripts, styles, frames and external resources.
   const cleaned = input.replace(/<!--[^]*?-->/g, " ")
     .replace(/<(script|style|svg|noscript|iframe|nav|footer|header)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<([a-z][\w-]*)\b[^>]*(?:\bhidden\b|aria-hidden=["']true["']|style=["'][^"']*display\s*:\s*none)[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/<(?:img|link|meta|source|video|audio|embed|object)\b[^>]*>/gi, " ");
   const main = cleaned.match(/<(?:main|article)\b[^>]*>([\s\S]*?)<\/(?:main|article)\s*>/i)?.[1] || cleaned;
   return { title, text: plain(main).slice(0, 4000) };
+}
+export function isGatePage(title: string, text: string): boolean {
+  return /^(?:access denied|forbidden|just a moment|checking your browser|robot check|captcha|sign in|log in|please enable javascript)/i.test(title.trim()) ||
+    /(?:verify you are human|complete the captcha|enable javascript to continue)/i.test(text.slice(0, 350));
 }
 const cache = new Map<string, { time: number; evidence: PageEvidence }>();
 export async function readPageEvidence(url: string, signal: AbortSignal): Promise<PageEvidence> {
@@ -27,7 +32,7 @@ export async function readPageEvidence(url: string, signal: AbortSignal): Promis
     const response = await invoke<{ url: string; html: string }>("read_source_page", { url: valid });
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
     const extracted = extractPageText(response.html);
-    const evidence: PageEvidence = extracted.text.length >= 40
+    const evidence: PageEvidence = extracted.text.length >= 40 && !isGatePage(extracted.title, extracted.text)
       ? { url: publicHttps(response.url) || valid, ...extracted, status: "read" }
       : unavailable("页面没有足够的可读文字，可能需要登录或由脚本加载");
     if (cache.size >= 100) cache.delete(cache.keys().next().value!);

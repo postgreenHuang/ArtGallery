@@ -2489,3 +2489,4 @@ main {
 .art-selection-reason > span { color: var(--green); font-weight: 500; }
 .art-selection-reason small { display: block; margin-top: 3px; font-size: 11px; opacity: 0.85; }
 .web-selection-reason { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.web-selection-reason small { display: block; margin-top: 3px; font-size: 11px; opacity: 0.85; }

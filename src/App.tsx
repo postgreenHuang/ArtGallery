@@ -103,6 +103,8 @@ const prompts = [
   },
 ];
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const pageEvidenceLabel = (item: Artwork | WebResult) => item.pageEvidence?.status === "read"
+  ? "已读来源页" : item.pageEvidence?.status === "unavailable" ? "来源页不可读" : "来源页未请求";
 function ArtImage({
   art,
   saved,
@@ -310,10 +312,10 @@ function ArtCard({
         </button>
       </div>
       <p className="art-selection-reason"><span>选择原因</span> {art.curatorReason || art.review?.reason || art.selectionReason || "历史记录未保存当时的选择依据。"}
-        {art.curatorReason && art.selectionReason && <small>检索依据：{art.selectionReason}</small>}
+        {(art.curatorReason || art.review?.reason) && art.selectionReason && <small>检索依据：{art.selectionReason}</small>}
       </p>
       {art.review && <p className={`review-status ${art.review.verdict}`} title={art.review.quote ? `引用依据：${art.review.quote}` : undefined}>
-        复核：{art.review.verdict === "keep" ? "相关" : "待核实"} · {art.review.imageProvided ? "已提供缩略图" : "未提供图片"} · {art.review.pageRead ? "已读来源页" : "依据馆藏资料"}
+        复核：{art.review.verdict === "keep" ? "相关" : "待核实"} · {art.review.imageProvided ? "已提供缩略图" : "未提供图片"} · {pageEvidenceLabel(art)}
       </p>}
       <div className="art-meta">
         <span>{art.date.slice(0, 38)}</span>
@@ -943,13 +945,18 @@ export default function App() {
     request.current?.abort();
     request.current = null;
     setBusy(false);
+    const stoppedReview: CandidateReview = { verdict: "uncertain", reason: "复核已停止，尚未确认。", confidence: 0, basis: "unavailable", imageProvided: false, pageRead: false };
     if (active)
       updateConversation(active, (c) => ({
         ...c,
         messages: [
           ...c.messages.map((message) => message.reviewPending ? { ...message, reviewPending: false, reviewCompleted: false,
             text: "复核已停止，以下候选保留为待核实。",
-            artworks: message.artworks?.map((art) => ({ ...art, review: { verdict: "uncertain" as const, reason: "复核已停止，尚未确认。", confidence: 0, basis: "unavailable" as const, imageProvided: false, pageRead: false } })),
+            artworks: message.artworks?.map((art) => ({ ...art, review: stoppedReview })),
+          } : message.pageReviewPending ? { ...message, pageReviewPending: false,
+            artworks: [...(message.artworks || []), ...(message.pendingPageArtworks || []).map((art) => ({ ...art, review: stoppedReview }))],
+            pendingPageArtworks: undefined,
+            searchWarning: [message.searchWarning, "分页复核已停止；新增候选保留为待核实。"].filter(Boolean).join(" "),
           } : message),
           {
             id: crypto.randomUUID(),
@@ -975,11 +982,21 @@ export default function App() {
         : await searchArt(message.query!, message.scope || library.settings.scope, message.offset, controller.signal);
       if (controller.signal.aborted) return;
       const newArtworks = r.artworks.filter((art) => ![...(message.artworks || []), ...(message.rejectedArtworks || [])].some((old) => old.id === art.id));
-      const reviewed = library.settings.useAi && desktop && newArtworks.length
-        ? await reviewCandidates(message.originalRequest || message.query || "继续寻找", current.messages,
-          { query: message.query || "", explanation: "继续检索", targetArtist: message.targetArtist, artistAliases: message.artistAliases, criteria: message.searchCriteria },
-          newArtworks, [], library.settings, controller.signal, setPhase)
-        : { artworks: newArtworks, rejectedArtworks: [] as Artwork[], warning: "" };
+      const needsReview = library.settings.useAi && desktop && newArtworks.length > 0;
+      if (needsReview) updateConversation(id, (c) => ({ ...c, messages: c.messages.map((m) => m.id === message.id
+        ? { ...m, pageReviewPending: true, pendingPageArtworks: newArtworks } : m) }));
+      let reviewed: { artworks: Artwork[]; rejectedArtworks: Artwork[]; warning: string } = { artworks: newArtworks, rejectedArtworks: [], warning: "" };
+      if (needsReview) {
+        try {
+          reviewed = await reviewCandidates(message.originalRequest || message.query || "继续寻找", current.messages,
+            { query: message.query || "", explanation: "继续检索", targetArtist: message.targetArtist, artistAliases: message.artistAliases, criteria: message.searchCriteria },
+            newArtworks, [], library.settings, controller.signal, setPhase);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          const unknown: CandidateReview = { verdict: "uncertain", reason: "分页复核暂不可用，保留待核实。", confidence: 0, basis: "unavailable", imageProvided: false, pageRead: false };
+          reviewed = { artworks: newArtworks.map((art) => ({ ...art, review: unknown })), rejectedArtworks: [], warning: `分页复核暂不可用：${errorText(error)}` };
+        }
+      }
       if (controller.signal.aborted) return;
       updateConversation(id, (c) => ({
         ...c,
@@ -992,6 +1009,8 @@ export default function App() {
                   ...reviewed.artworks.map((art) => ({ ...art, selectionReason: art.selectionReason || `继续检索“${message.query?.slice(0, 40)}”返回的候选。` })),
                 ],
                 rejectedArtworks: [...(m.rejectedArtworks || []), ...reviewed.rejectedArtworks],
+                pageReviewPending: false,
+                pendingPageArtworks: undefined,
                 reviewCompleted: m.reviewCompleted || (library.settings.useAi && desktop && newArtworks.length > 0),
                 searchWarning: [m.searchWarning, "warning" in r ? r.warning : "", reviewed.warning].filter(Boolean).join(" "),
                 offset: "offsets" in r ? undefined : r.offset,
@@ -1831,16 +1850,17 @@ export default function App() {
                     {[...(m.artworks || []), ...(m.webResults || []), ...(m.rejectedArtworks || []), ...(m.rejectedWebResults || [])].filter((item) => item.review).map((item) => <div className={`review-audit-item ${item.review!.verdict}`} key={"id" in item ? item.id : item.url}>
                       <strong>{item.review!.verdict === "reject" ? "已排除" : item.review!.verdict === "keep" ? "相关" : "待核实"} · {item.title}</strong>
                       <p>{item.review!.reason}</p>
-                      <small>{item.review!.imageProvided ? "已提供缩略图" : "未提供图片"} · {item.review!.pageRead ? "已读来源页" : "来源页未读取"}{item.review!.quote ? ` · 引用：${item.review!.quote}` : ""}</small>
-                      <a href={"id" in item ? item.source : item.url} target="_blank" rel="noreferrer">查看来源 <ExternalLink size={12} /></a>
+                      <small title={item.pageEvidence?.error}>{item.review!.imageProvided ? "已提供缩略图" : "未提供图片"} · {pageEvidenceLabel(item)}{item.review!.quote ? ` · 引用：${item.review!.quote}` : ""}</small>
+                      <a href={item.pageEvidence?.status === "read" ? item.pageEvidence.url : "id" in item ? item.source : item.url} target="_blank" rel="noreferrer">{item.pageEvidence?.status === "read" ? "查看证据页" : "查看来源"} <ExternalLink size={12} /></a>
                     </div>)}
                   </details>}
+                  {m.pageReviewPending && <p className="search-notice" role="status">正在逐件复核新增候选，原有展墙仍可查看；停止后新增候选会保留为待核实。</p>}
                   {!m.reviewPending && !!m.artworks?.length && <><p className="search-notice">作品已按顺序编号，可以直接追问某一张，或比较几张作品。</p>{cards(m.artworks, false, true)}</>}
                   {!m.reviewPending && !!m.webResults?.length && <div className="web-results">
                     <h3>全网作品线索 <small>作者与授权待核实</small></h3>
                     <div className="web-result-grid">{m.webResults.map((item, index) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer">
                       {item.thumbnail && <img src={item.thumbnail} loading="lazy" referrerPolicy="no-referrer" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
-                      <strong>网页 {index + 1} · {item.title}</strong><span>{item.source} <ExternalLink size={12} /></span><p className="web-selection-reason">选择原因：{item.review?.reason || item.selectionReason || "搜索引擎返回的网页线索，作者与作品归属待核实。"}</p>{item.review && <span className={`review-status ${item.review.verdict}`}>复核：{item.review.verdict === "keep" ? "相关线索" : "待核实"} · {item.review.pageRead ? "已读来源页" : "来源页未读取"}</span>}
+                      <strong>网页 {index + 1} · {item.title}</strong><span>{item.source} <ExternalLink size={12} /></span><p className="web-selection-reason">选择原因：{item.review?.reason || item.selectionReason || "搜索引擎返回的网页线索，作者与作品归属待核实。"}{item.review && item.selectionReason && <small>检索依据：{item.selectionReason}</small>}</p>{item.review && <span className={`review-status ${item.review.verdict}`}>复核：{item.review.verdict === "keep" ? "相关线索" : "待核实"} · {pageEvidenceLabel(item)}</span>}
                     </a>)}</div>
                   </div>}
                   {m.query && <a className="text-button external-search" href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(m.query)}`} target="_blank" rel="noreferrer"><Search size={14} />在 Google 图片中继续找<ExternalLink size={12} /></a>}

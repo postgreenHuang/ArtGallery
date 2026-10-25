@@ -260,6 +260,7 @@ test("Chicago cards recover from a failed thumbnail and can be retried", async (
   const fallback = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago fallback" });
   const retry = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago retry" });
   const viewerCard = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago viewer" });
+  await fallback.scrollIntoViewIfNeeded();
   await expect(fallback.locator("img")).toHaveJSProperty("naturalWidth", 1);
   await expect(fallback.getByText("图片暂不可用")).toHaveCount(0);
   await expect(retry.getByRole("button", { name: "重试缩略图" })).toBeVisible();

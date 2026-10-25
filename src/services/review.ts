@@ -22,6 +22,24 @@ export function safeReviewThumbnail(value: string | undefined): string | undefin
   } catch { /* Missing or untrusted thumbnails are treated as unavailable. */ }
 }
 const compact = (value: string) => value.replace(/\s+/g, " ").trim();
+function pageSupportsQuote(candidate: ReviewCandidate, quote: string): boolean {
+  if (candidate.page?.status !== "read" || quote.length < 2) return false;
+  const page = compact(`${candidate.page.title} ${candidate.page.text}`).toLocaleLowerCase();
+  const quoted = quote.toLocaleLowerCase();
+  const at = page.indexOf(quoted);
+  if (at < 0) return false;
+  if (!candidate.key.startsWith("web:")) return true;
+  // A web hit can be a gallery or a list of many works. Only trust a quote
+  // near the particular result title, not an unrelated item elsewhere.
+  const title = compact(candidate.title).toLocaleLowerCase();
+  if (title.length < 8) return false;
+  let titleAt = page.indexOf(title);
+  while (titleAt >= 0) {
+    if (Math.abs(titleAt - at) <= 800) return true;
+    titleAt = page.indexOf(title, titleAt + title.length);
+  }
+  return false;
+}
 function pending(candidate: ReviewCandidate, reason: string, imageProvided = false): CandidateReview {
   return { verdict: "uncertain", reason, confidence: 0, basis: "unavailable", imageProvided, pageRead: candidate.page?.status === "read" };
 }
@@ -30,6 +48,9 @@ export function parseReview(
 ): Map<string, CandidateReview> {
   const parsed = parseAiJson(text);
   if (!Array.isArray(parsed.decisions)) throw new Error("AI 未返回逐件复核结果");
+  const allowed = new Set(candidates.map((candidate) => candidate.key));
+  if (parsed.decisions.some((item) => !item || typeof item !== "object" || !allowed.has((item as { key?: string }).key || "")))
+    throw new Error("AI 返回了不属于当前批次的候选，整批保留待核实");
   const output = new Map<string, CandidateReview>();
   for (const candidate of candidates) {
     const imageProvided = imageKeys.has(candidate.key);
@@ -44,8 +65,8 @@ export function parseReview(
     const quote = typeof item.quote === "string" ? compact(item.quote).slice(0, 240) : "";
     const metadata = [candidate.title, candidate.artist, candidate.date, candidate.description].map(compact);
     const validEvidence = basis === "image" ? imageProvided
-      : basis === "page" ? candidate.page?.status === "read" && quote.length >= 2 && compact(`${candidate.page.title} ${candidate.page.text}`).includes(quote)
-      : basis === "metadata" ? quote.length >= 2 && metadata.some((value) => value.includes(quote)) : false;
+      : basis === "page" ? pageSupportsQuote(candidate, quote)
+      : basis === "metadata" ? quote.length >= 2 && metadata.some((value) => value.toLocaleLowerCase().includes(quote.toLocaleLowerCase())) : false;
     let verdict = item.verdict as CandidateReview["verdict"];
     let reason = compact(item.reason).slice(0, 48);
     if (verdict !== "uncertain" && !validEvidence) { verdict = "uncertain"; reason = "缺少可核对的依据，保留待核实。"; }
