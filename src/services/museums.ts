@@ -6,7 +6,7 @@ import { plain } from "./commons";
 export type Museum = "cleveland" | "chicago";
 const OFFSET = { cleveland: 1_000_000_000_000, chicago: 2_000_000_000_000 };
 const hosts = { cleveland: "openaccess-cdn.clevelandart.org", chicago: "www.artic.edu" };
-export const museumName = { cleveland: "克利夫兰艺术博物馆", chicago: "芝加哥艺术博物馆" };
+export const museumName = { cleveland: "克利夫兰艺术博物馆", chicago: "芝加哥艺术博物馆", met: "大都会艺术博物馆" };
 
 export function museumId(museum: Museum, id: number): number | null {
   return Number.isSafeInteger(id) && id > 0 && id < 1_000_000_000_000

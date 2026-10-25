@@ -1,6 +1,6 @@
 export interface Artwork {
   id: number;
-  provider?: "cleveland" | "chicago";
+  provider?: "cleveland" | "chicago" | "met";
   file: string;
   title: string;
   artist: string;
@@ -16,6 +16,32 @@ export interface Artwork {
   license: string;
   licenseUrl: string;
   attribution: string;
+  selectionReason?: string;
+  curatorReason?: string;
+  pageEvidence?: PageEvidence;
+  review?: CandidateReview;
+}
+export interface SearchCriteria {
+  required: string[];
+  preferred: string[];
+  excluded: string[];
+  requiresImage: boolean;
+}
+export interface PageEvidence {
+  url: string;
+  title: string;
+  text: string;
+  status: "read" | "unavailable";
+  error?: string;
+}
+export interface CandidateReview {
+  verdict: "keep" | "reject" | "uncertain";
+  reason: string;
+  confidence: number;
+  basis: "metadata" | "page" | "image" | "unavailable";
+  quote?: string;
+  imageProvided: boolean;
+  pageRead: boolean;
 }
 export interface Message {
   id: string;
@@ -25,9 +51,30 @@ export interface Message {
   query?: string;
   scope?: Settings["scope"];
   offset?: number;
-  providerOffsets?: Partial<Record<"commons" | "cleveland" | "chicago", number>>;
+  providerOffsets?: Partial<Record<"commons" | "cleveland" | "chicago" | "met", number>>;
+  targetArtist?: string;
+  artistAliases?: string[];
+  webResults?: WebResult[];
+  searchWarning?: string;
   error?: boolean;
   suggestions?: ArtistSuggestion[];
+  searchCriteria?: SearchCriteria;
+  originalRequest?: string;
+  reviewCompleted?: boolean;
+  reviewPending?: boolean;
+  searchQueries?: string[];
+  rejectedArtworks?: Artwork[];
+  rejectedWebResults?: WebResult[];
+}
+export interface WebResult {
+  title: string;
+  url: string;
+  thumbnail?: string;
+  description: string;
+  source: string;
+  selectionReason?: string;
+  pageEvidence?: PageEvidence;
+  review?: CandidateReview;
 }
 export interface ArtistSuggestion {
   nameZh: string;
@@ -56,6 +103,7 @@ export interface Settings {
   scope: "google" | "commons";
   theme: "light" | "contrast" | "warm" | "dark" | "system";
   explanationFontSize: number;
+  webSearch?: boolean;
 }
 export interface Library {
   version: 1;

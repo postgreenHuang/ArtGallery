@@ -78,7 +78,7 @@ export async function discoverArt(
         const unseen = unique.filter((art) => !seenIds.has(art.id));
         const notPrevious = unique.filter((art) => !previousIds.includes(art.id));
         if (unseen.length) {
-          artworks.push(unseen[Math.floor(Math.random() * unseen.length)]);
+          artworks.push({ ...unseen[Math.floor(Math.random() * unseen.length)], selectionReason: `轮换推荐“${seed.name}”，优先展示本次未看过的候选。` });
           artists.push(seed.name);
           selected = true;
           break;
@@ -91,7 +91,7 @@ export async function discoverArt(
       }
     }
     if (!selected && fallback) {
-      artworks.push(fallback);
+      artworks.push({ ...fallback, selectionReason: `轮换推荐“${seed.name}”；未发现新候选，重访已见作品。` });
       artists.push(seed.name);
     }
   }

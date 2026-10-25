@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
+  await page.route("https://collectionapi.metmuseum.org/**", (route) => route.fulfill({ json: { total: 0, objectIDs: [] } }));
   await page.route("https://openaccess-api.clevelandart.org/**", (route) =>
     route.fulfill({ json: { info: { total: 0 }, data: [] } }),
   );

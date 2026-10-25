@@ -101,6 +101,7 @@ fn image_url(url:&str)->Result<reqwest::Url,String>{
     let trusted=match host{
         "upload.wikimedia.org"|"thumb.wikimedia.org"=>true,
         "openaccess-cdn.clevelandart.org"=>path.ends_with("_web.jpg")||path.ends_with("_print.jpg"),
+        "images.metmuseum.org"=>path.starts_with("/CRDImages/")&&(path.to_ascii_lowercase().ends_with(".jpg")||path.to_ascii_lowercase().ends_with(".jpeg")),
         "www.artic.edu"=>path.starts_with("/iiif/2/")&&path.ends_with("/0/default.jpg"),
         _=>false,
     };
@@ -146,6 +147,84 @@ async fn museum_query(provider:String,query:String,state:State<'_,AppState>)->Re
     let response=state.client.get(url).timeout(Duration::from_secs(30)).send().await.map_err(err)?;
     if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{return Err(note_museum_cooldown(&state,&provider,&response))}
     response.error_for_status().map_err(err)?.json().await.map_err(err)
+}
+#[tauri::command]
+async fn met_query(path:String,state:State<'_,AppState>)->Result<Value,String>{
+    if path.len()>1024{return Err("馆藏查询过长".into())}
+    let valid=if let Some(id)=path.strip_prefix("v1/objects/"){!id.is_empty()&&id.bytes().all(|b|b.is_ascii_digit())}
+        else{path.starts_with("v1.1/search?")};
+    if !valid{return Err("无效的大都会查询".into())}
+    let url=format!("https://collectionapi.metmuseum.org/public/collection/{path}");
+    state.client.get(url).timeout(Duration::from_secs(30)).send().await.map_err(err)?.error_for_status().map_err(err)?.json().await.map_err(err)
+}
+#[tauri::command]
+async fn web_image_search(query:String,state:State<'_,AppState>)->Result<Value,String>{
+    if query.trim().is_empty()||query.len()>1000{return Err("无效的搜图词".into())}
+    let secret=credential("https://api.search.brave.com")?.get_password().map_err(|_|"请先在偏好中保存 Brave Search API Key".to_string())?;
+    let response=state.client.get("https://api.search.brave.com/res/v1/images/search")
+        .query(&[("q",query.as_str()),("count","20"),("spellcheck","false"),("safesearch","off")])
+        .header("X-Subscription-Token",secret).timeout(Duration::from_secs(30)).send().await
+        .map_err(|_|"无法连接全网搜图服务，请检查网络".to_string())?;
+    if !response.status().is_success(){return Err(format!("全网搜图返回 HTTP {}，请检查密钥或额度",response.status()))}
+    response.json().await.map_err(|_|"全网搜图返回了无效响应".to_string())
+}
+fn public_page_ip(ip:std::net::IpAddr)->bool {
+    match ip {
+        std::net::IpAddr::V4(v)=>{
+            let [a,b,c,_]=v.octets();
+            !v.is_private()&&!v.is_loopback()&&!v.is_link_local()&&!v.is_broadcast()&&!v.is_unspecified()&&!v.is_multicast()&&!v.is_documentation()
+                &&a!=0&&a<240&&!(a==100&&(64..=127).contains(&b))&&!(a==198&&(b==18||b==19))&&!(a==192&&b==0&&c==0)
+        },
+        std::net::IpAddr::V6(v)=>{
+            let segments=v.segments();
+            (segments[0]&0xe000)==0x2000 && !(segments[0]==0x2001&&(segments[1]==0||segments[1]==0xdb8)) && segments[0]!=0x2002
+        },
+    }
+}
+fn source_page_url(raw:&str)->Result<reqwest::Url,String>{
+    if raw.len()>2048{return Err("来源地址过长".into())}
+    let mut url=reqwest::Url::parse(raw).map_err(|_|"无效的来源地址".to_string())?;
+    let host=url.host_str().unwrap_or("").trim_end_matches('.');
+    if url.scheme()!="https"||url.port().is_some_and(|p|p!=443)||!url.username().is_empty()||url.password().is_some()
+        ||!host.contains('.')||host.parse::<std::net::IpAddr>().is_ok()||host.ends_with(".localhost")||host.ends_with(".local")||host.ends_with(".internal"){
+        return Err("只读取公开 HTTPS 来源网页".into())
+    }
+    url.set_fragment(None);Ok(url)
+}
+async fn read_public_page(raw:String)->Result<Value,String>{
+    let mut url=source_page_url(&raw)?;
+    for redirect in 0..=2 {
+        let host=url.host_str().ok_or("无效来源主机")?.to_string();
+        let addresses:Vec<_>=tokio::time::timeout(Duration::from_secs(3),tokio::net::lookup_host((host.as_str(),443))).await
+            .map_err(|_|"来源页域名解析超时".to_string())?.map_err(|_|"来源页域名无法解析".to_string())?.collect();
+        if addresses.is_empty()||addresses.iter().any(|address|!public_page_ip(address.ip())){return Err("来源页指向非公开网络地址".into())}
+        // Pin validated DNS addresses and bypass proxies for arbitrary source pages.
+        // Existing fixed museum and AI API clients continue using system proxies.
+        let client=reqwest::Client::builder().no_proxy().resolve_to_addrs(&host,&addresses)
+            .redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(8)).user_agent("AtelierGallery/0.1 source-review").build().map_err(err)?;
+        let mut response=client.get(url.clone()).send().await.map_err(|_|"来源页连接失败".to_string())?;
+        if response.status().is_redirection(){
+            if redirect==2{return Err("来源页重定向过多".into())}
+            let location=response.headers().get(reqwest::header::LOCATION).and_then(|value|value.to_str().ok()).ok_or("来源页重定向无效")?;
+            url=source_page_url(url.join(location).map_err(err)?.as_str())?;continue
+        }
+        if !response.status().is_success(){return Err(format!("来源页返回 HTTP {}",response.status()))}
+        let content_type=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value|value.to_str().ok()).unwrap_or("");
+        if !(content_type.starts_with("text/html")||content_type.starts_with("application/xhtml+xml")||content_type.starts_with("text/plain")){return Err("来源不是可读取的文字网页".into())}
+        let limit=512*1024;
+        let mut bytes=Vec::new();
+        while let Some(chunk)=response.chunk().await.map_err(|_|"来源页读取失败".to_string())? {
+            let remaining=limit-bytes.len();
+            bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            if bytes.len()>=limit{break}
+        }
+        return Ok(json!({"url":url.as_str(),"html":String::from_utf8_lossy(&bytes)}))
+    }
+    Err("无法读取来源页".into())
+}
+#[tauri::command]
+async fn read_source_page(url:String)->Result<Value,String>{
+    tokio::time::timeout(Duration::from_secs(12),read_public_page(url)).await.map_err(|_|"来源页读取超时".to_string())?
 }
 #[tauri::command]
 async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state:State<'_,AppState>)->Result<String,String>{
@@ -334,7 +413,7 @@ fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init(
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
     app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,read_source_page,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
     if let Err(error)=result{if !error.to_string().contains("资料库恢复已取消"){
         rfd::MessageDialog::new().set_title("拾色启动失败").set_level(rfd::MessageLevel::Error).set_description(error.to_string()).show();
     }}
@@ -383,6 +462,13 @@ mod tests {use super::*;
     }
     #[test]fn native_asset_path_omits_windows_device_prefix(){assert_eq!(webview_path(std::path::Path::new(r"\\?\D:\Gallery\images\1.jpg")),r"D:\Gallery\images\1.jpg");assert_eq!(webview_path(std::path::Path::new(r"\\?\UNC\server\Gallery\1.jpg")),r"\\server\Gallery\1.jpg");}
     #[test]fn reject_untrusted_images(){assert!(image_url("https://upload.wikimedia.org/a.jpg").is_ok());assert!(image_url("https://openaccess-cdn.clevelandart.org/1998.78.14/1998.78.14_print.jpg").is_ok());assert!(image_url("https://www.artic.edu/iiif/2/id/full/843,/0/default.jpg").is_ok());assert!(image_url("https://upload.wikimedia.org.evil.test/a").is_err());assert!(image_url("https://openaccess-cdn.clevelandart.org.evil.test/a_print.jpg").is_err());assert!(image_url("file:///etc/passwd").is_err());}
+    #[test]fn met_images_remain_on_the_museum_host(){
+        assert!(image_url("https://images.metmuseum.org/CRDImages/ep/original/a.jpg").is_ok());
+        assert!(image_url("https://images.metmuseum.org/CRDImages/ep/original/a.JPG").is_ok());
+        assert!(image_url("https://images.metmuseum.org.evil.test/CRDImages/a.jpg").is_err());
+        assert!(image_url("https://images.metmuseum.org/other/a.jpg").is_err());
+        assert!(image_url("https://images.metmuseum.org/CRDImages/a.jpg?redirect=https://example.com").is_err());
+    }
     #[test]fn commons_imageinfo_query_is_removed_before_download(){
         let original="https://upload.wikimedia.org/wikipedia/commons/6/66/VanGogh-starry_night_ballance1.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original";
         assert_eq!(image_url(original).unwrap().as_str(),"https://upload.wikimedia.org/wikipedia/commons/6/66/VanGogh-starry_night_ballance1.jpg");

@@ -18,12 +18,20 @@
 flowchart LR
   User[用户描述 / 对话上下文] --> Plan[AI 结构化检索计划]
   User --> Direct[无需 AI 的关键词检索]
-  Plan --> Commons[Commons Search + Imageinfo]
+  Plan --> Route{搜索或讨论}
+  Route --> Sources[Commons / Cleveland / Chicago / Met]
+  Route --> Discuss[基于最近结果回答]
+  Sources --> Commons[统一馆藏结果]
+  Plan --> Web[可选 Brave 网页图片线索]
+  Web --> Answer[基于实际结果生成回答]
   Plan --> Recommend[风格比较 / 候选画家]
   Recommend --> Commons
   Direct --> Commons
   Commons --> Normalize[真实作品 ID / 元数据 / 授权 / 来源]
-  Normalize --> Gallery[640px 预览展墙]
+  Normalize --> Match[作者匹配]
+  Match --> Gallery[缩略图展墙]
+  Gallery --> Answer
+  Answer --> Save
   Gallery --> Cache[资料库 cache/thumbnails 缩略图]
   Gallery --> HD[用户主动请求 2400px]
   HD --> Preview[cache/high-resolution 高清预览]
@@ -35,7 +43,11 @@ flowchart LR
   Cache --> Folder
 ```
 
-模型不接收系统文件访问权、不执行任意工具调用、不下载任意 URL。寻画 AI 输出 `query` 与 `explanation`；风格比较还输出其他画家的候选与理由，候选先通过 Commons 检索验证。这个验证只证明馆藏中有相关文件，不证明 AI 的艺术史判断正确。作品讲解接收该画的缩略图 URL 与馆藏资料。所有下载限定 Wikimedia 官方图像域名，限 JPEG/PNG/WebP；预览上限 32 MB，收藏原图上限 512 MB，不自动跟随重定向。网络请求带超时；缓存并发为 3；相同版本图片下载在前端合并。
+模型不接收系统文件访问权，也不生成可执行工具指令。寻画规划输出 `action`（搜索或讨论）、`query`、`targetArtist`、`artistAliases` 与可选风格推荐。检索适配器覆盖 Commons、Cleveland、Chicago、Met，统一结果后检查作者字段；分页继续沿用约束。Brave 全网搜图返回独立的 `WebResult`，只嵌入 Brave 代理缩略图，来源页由用户打开，不进入馆藏原图下载通道。
+
+搜索结果先写入会话，再发送给模型生成基于结果的回答。每条结果消息保存作品顺序、查询、作者条件、来源警告及网页线索。后续讨论发送最近 8 条消息，并额外保留最近一组结果；每组最多 60 件作品资料。回答最多附 3 张馆藏缩略图，优先读取用户指定的编号；不支持视觉的服务降级为文字并显示提示。模型失败保留已有结果，取消后丢弃迟到的回答。
+
+图片下载限定已核准馆藏域名，限 JPEG/PNG/WebP；预览上限 32 MB，收藏原图上限 512 MB，不自动跟随重定向。Brave API 请求固定服务地址，密钥按独立服务地址保存在系统凭据库。自动化测试覆盖结果上下文、作者错配、讨论不重搜、文本模型降级、失败保留结果与来源隔离。
 
 ## 数据源上的容易遗漏之处
 
@@ -61,7 +73,7 @@ flowchart LR
 
 1. 先补真实供应商 API 联调、桌面打包和更多平台测试。
 2. 追加资料库版本迁移、导入导出、备份恢复 UI、缓存配额与画架孤立原图整理；数据量增大后拆为每会话文件，减少坚果云快照冲突。
-3. 多数据源适配器：统一 `search / details / preview / license` 接口；接入 Met、AIC 等时逐源核验授权与速率限制。
+3. 多数据源适配器：统一 `search / details / preview / license` 接口；继续增加其他馆藏时逐源核验授权与速率限制。
 4. 推荐增强：以用户主动选择的收藏标签驱动推荐；可选上传收藏摘要，需要清楚告知哪些信息会发给 AI。当前的推荐只依据对话上下文。
 5. 欣赏模式后续增加键盘左右切换、画架分组和策展排序。
 

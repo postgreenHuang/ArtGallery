@@ -41,6 +41,8 @@ import type {
   SavedArtwork,
   Settings,
   ArtistSuggestion,
+  CandidateReview,
+  WebResult,
 } from "./types";
 import { defaultLibrary } from "./types";
 import {
@@ -54,7 +56,9 @@ import {
 } from "./services/storage";
 
 import { highResolution, searchArt } from "./services/commons";
-import { searchAcrossProviders } from "./services/artSearch";
+import { searchAcrossProviders, searchForCurator } from "./services/artSearch";
+import { reviewCandidates } from "./services/review";
+import { SEARCH_KEY_ADDRESS } from "./services/webSearch";
 import { museumName } from "./services/museums";
 import { discoverArt } from "./services/discovery";
 import { ViewerFullscreenController } from "./services/viewerFullscreen";
@@ -64,7 +68,10 @@ import {
   isRecommendationRequest,
   localArtworkIntroduction,
   planSearch,
-  suggestArtists,
+  replyFromResults,
+  curateResults,
+  type CuratorReply,
+  type Plan,
 } from "./services/ai";
 
 const isOriginalLocal = (local?: string) =>
@@ -232,6 +239,7 @@ function ArtCard({
   onContext,
   onSimilar,
   pending,
+  position,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
@@ -240,6 +248,7 @@ function ArtCard({
   onContext: (x: number, y: number) => void;
   onSimilar?: () => void;
   pending: boolean;
+  position?: number;
 }) {
   const originalSaved = isOriginalLocal(saved?.local);
   const [imageFailed, setImageFailed] = useState(false);
@@ -252,6 +261,7 @@ function ArtCard({
         onContext(e.clientX, e.clientY);
       }}
     >
+      {position !== undefined && <span className="art-number">作品 {position}</span>}
       <button
         className="art-open"
         onClick={onOpen}
@@ -299,6 +309,12 @@ function ArtCard({
           )}
         </button>
       </div>
+      <p className="art-selection-reason"><span>选择原因</span> {art.curatorReason || art.review?.reason || art.selectionReason || "历史记录未保存当时的选择依据。"}
+        {art.curatorReason && art.selectionReason && <small>检索依据：{art.selectionReason}</small>}
+      </p>
+      {art.review && <p className={`review-status ${art.review.verdict}`} title={art.review.quote ? `引用依据：${art.review.quote}` : undefined}>
+        复核：{art.review.verdict === "keep" ? "相关" : "待核实"} · {art.review.imageProvided ? "已提供缩略图" : "未提供图片"} · {art.review.pageRead ? "已读来源页" : "依据馆藏资料"}
+      </p>}
       <div className="art-meta">
         <span>{art.date.slice(0, 38)}</span>
         <span>{art.provider ? museumName[art.provider] : art.license}</span>
@@ -784,9 +800,11 @@ export default function App() {
         messages: [...c.messages, user],
       }));
     try {
-      const plan = chosen
+      const plan: Plan = chosen
         ? {
             query: chosen.query,
+            targetArtist: chosen.query,
+            action: "search",
             explanation: "已按你选择的画家名称重新检索开放馆藏。",
           }
         : await planSearch(
@@ -812,125 +830,94 @@ export default function App() {
         }));
         return;
       }
-      if (plan.recommendations?.length) {
-        setPhase("正在核对推荐画家的开放馆藏…");
-        const checked = await Promise.all(
-          plan.recommendations.map(async (candidate) => {
-            let found = await searchAcrossProviders(
-              candidate.query,
-              library.settings.scope,
-              controller.signal,
-            );
-            let candidateScope = library.settings.scope;
-            if (!found.artworks.length && candidateScope === "google") {
-              found = await searchAcrossProviders(
-                candidate.query,
-                "commons",
-                controller.signal,
-              );
-              candidateScope = "commons";
-            }
-            return found.artworks.length
-              ? {
-                  candidate: { ...candidate, scope: candidateScope },
-                  artworks: found.artworks.slice(0, 4),
-                }
-              : null;
-          }),
-        );
+      if (plan.action === "discuss") {
+        setPhase("策展人正在结合刚才的作品回答…");
+        const reply = await replyFromResults(text, history, library.settings, controller.signal);
         if (controller.signal.aborted) return;
-        const valid = checked.filter(
-          (item): item is NonNullable<typeof item> => item !== null,
-        );
-        const artworks = valid
-          .flatMap((item) => item.artworks)
-          .filter(
-            (art, index, all) =>
-              all.findIndex((other) => other.id === art.id) === index,
-          );
-        updateConversation(id, (c) => ({
-          ...c,
-          messages: [
-            ...c.messages,
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              text: valid.length
-                ? `${plan.explanation}\n\n下面这些画家在开放馆藏中有可查看的作品。你可以点选一位继续探索。`
-                : `${plan.explanation}\n\n这些推荐暂时没有在当前开放馆藏中找到可展示的作品。`,
-              artworks,
-              suggestions: valid.map((item) => item.candidate),
-              query: valid.map((item) => item.candidate.nameEn).join(" · "),
-              scope: library.settings.scope,
-            },
-          ],
-        }));
+        updateConversation(id, (c) => ({ ...c, messages: [...c.messages, { id: crypto.randomUUID(), role: "assistant", text: reply }] }));
         return;
       }
-      setPhase("正在从多个开放馆藏搜集缩略图…");
-      const scope = chosen?.scope || library.settings.scope;
-      const result = await searchAcrossProviders(plan.query, scope, controller.signal);
-      let suggestions: ArtistSuggestion[] = [];
-      let suggestionError = "";
-      if (!result.artworks.length && library.settings.useAi && desktop) {
-        setPhase("正在辨认画家名称，并核对馆藏…");
-        try {
-          const candidates = await suggestArtists(
-            text,
-            plan.query,
-            library.settings,
-            controller.signal,
-          );
-          const checked = await Promise.all(
-            candidates.map(async (candidate) => {
-              const direct = await searchAcrossProviders(
-                candidate.query,
-                scope,
-                controller.signal,
-              );
-              if (direct.artworks.length) return { ...candidate, scope };
-              if (scope === "google") {
-                const broad = await searchAcrossProviders(
-                  candidate.query,
-                  "commons",
-                  controller.signal,
-                );
-                if (broad.artworks.length)
-                  return { ...candidate, scope: "commons" as const };
-              }
-              return null;
-            }),
-          );
-          suggestions = checked.filter(
-            (candidate): candidate is NonNullable<typeof candidate> =>
-              candidate !== null,
-          );
-        } catch (e) {
-          if (controller.signal.aborted) return;
-          suggestionError = ` AI 辨认暂不可用：${errorText(e)}`;
+      const present = async (result: { artworks: Artwork[]; webResults: WebResult[]; warning: string; scope: Settings["scope"]; offsets?: Message["providerOffsets"]; suggestions?: ArtistSuggestion[]; failed?: boolean; queries?: string[] }) => {
+        const responseId = crypto.randomUUID();
+        const needsReview = library.settings.useAi && desktop && (result.artworks.length > 0 || result.webResults.length > 0);
+        const message: Message = { id: responseId, role: "assistant", text: needsReview ? "已搜到候选，正在逐件复核资料与缩略图…" : "正在整理搜索结果…", error: result.failed,
+          artworks: result.artworks, webResults: result.webResults, searchWarning: result.warning,
+          query: plan.query, targetArtist: plan.targetArtist, artistAliases: plan.artistAliases,
+          searchCriteria: plan.criteria, originalRequest: text, searchQueries: result.queries || [plan.query],
+          reviewPending: needsReview, scope: result.scope, providerOffsets: result.offsets, suggestions: result.suggestions };
+        if (controller.signal.aborted) return;
+        // Save all candidates before review; the main wall waits for review to finish.
+        updateConversation(id, (c) => ({ ...c, messages: [...c.messages, message] }));
+        let selected = { artworks: result.artworks, webResults: result.webResults, rejectedArtworks: [] as Artwork[], rejectedWebResults: [] as WebResult[], warning: "" };
+        if (needsReview) {
+          try { selected = await reviewCandidates(text, history, plan, result.artworks, result.webResults, library.settings, controller.signal, setPhase); }
+          catch (error) {
+            if (controller.signal.aborted) return;
+            const unknown: CandidateReview = { verdict: "uncertain", reason: "复核暂不可用，保留待核实。", confidence: 0, basis: "unavailable", imageProvided: false, pageRead: false };
+            selected = { ...selected, artworks: result.artworks.map((art) => ({ ...art, review: unknown })), webResults: result.webResults.map((item) => ({ ...item, review: unknown })), warning: `复核暂不可用：${errorText(error)}` };
+          }
         }
+        if (controller.signal.aborted) return;
+        const uncertain = selected.artworks.filter((art) => art.review?.verdict === "uncertain").length;
+        const removed = selected.rejectedArtworks.length + selected.rejectedWebResults.length;
+        const fallback = result.failed ? "搜索服务暂时不可用，尚未取得匹配结果。请稍后重新尝试。" : selected.artworks.length
+          ? `${needsReview ? "复核后保留" : "找到"} ${selected.artworks.length} 件馆藏作品${uncertain ? `，其中 ${uncertain} 件待核实` : ""}。可以按下方顺序继续提问。`
+          : selected.webResults.length ? "本次未找到符合条件的馆藏作品。下方保留相关或待核实的网页线索，作者归属与授权仍需核实。"
+          : removed ? `本次候选中有 ${removed} 项被判为明显不符，已移入复核记录。没有用其他作品补齐。`
+          : "当前接入来源未找到符合条件的作品。可在 Google 图片中继续找，或调整检索条件。";
+        const warning = [result.warning, selected.warning].filter(Boolean).join(" ");
+        updateConversation(id, (c) => ({ ...c, messages: c.messages.map((m) => m.id === responseId ? {
+          ...m, text: fallback, artworks: selected.artworks, webResults: selected.webResults,
+          rejectedArtworks: selected.rejectedArtworks, rejectedWebResults: selected.rejectedWebResults,
+          reviewPending: false, reviewCompleted: needsReview, searchWarning: warning,
+        } : m) }));
+        if (library.settings.useAi && desktop) {
+          setPhase("策展人正在根据复核后的结果回答…");
+          let reply: CuratorReply;
+          try {
+            reply = await curateResults(text, history, library.settings, controller.signal, {
+              query: plan.query, targetArtist: plan.targetArtist, criteria: plan.criteria, artworks: selected.artworks,
+              webResults: selected.webResults, warning,
+              rejected: [...selected.rejectedArtworks, ...selected.rejectedWebResults].map((item) => ({ title: item.title, reason: item.review?.reason || "" })),
+            });
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            reply = { text: `${fallback}\n\nAI 结果解读暂不可用：${errorText(error)}`, reasons: {} };
+          }
+          if (controller.signal.aborted) return;
+          updateConversation(id, (c) => ({ ...c, messages: c.messages.map((m) => m.id === responseId ? { ...m, text: reply.text, artworks: m.artworks?.map((art) => ({ ...art, curatorReason: reply.reasons[String(art.id)] })) } : m) }));
+        }
+      };
+      if (plan.recommendations?.length) {
+        setPhase("正在核对推荐画家的实际作品…");
+        const checked = await Promise.all(plan.recommendations.map(async (candidate) => ({
+          candidate,
+          result: await searchForCurator(candidate.query, library.settings, controller.signal, { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn] }),
+        })));
+        if (controller.signal.aborted) return;
+        const artworks = checked.flatMap((item) => item.result.artworks.slice(0, 4).map((art) => ({ ...art, selectionReason: `风格推荐 ${item.candidate.nameZh}：${item.candidate.reason.slice(0, 45)}；已核对作者。` }))).filter((art, index, all) => all.findIndex((other) => other.id === art.id) === index);
+        const webResults = checked.flatMap((item) => item.result.webResults.slice(0, 3)).filter((item, index, all) => all.findIndex((other) => other.url === item.url) === index);
+        await present({ artworks, webResults, warning: checked.map((item) => `${item.candidate.nameEn}：${item.candidate.reason} ${item.result.warning} ${!item.result.artworks.length ? "本次无作者匹配的馆藏作品。" : ""}`).join("\n"),
+          scope: library.settings.scope,
+          suggestions: checked.filter((item) => item.result.artworks.length).map((item) => ({ ...item.candidate, scope: item.result.scope })),
+        });
+        return;
       }
-      if (controller.signal.aborted) return;
-      updateConversation(id, (c) => ({
-        ...c,
-        messages: [
-          ...c.messages,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            text: result.artworks.length
-              ? plan.explanation
-              : suggestions.length
-                ? "没有找到对应作品。你可能在说以下画家；这些名称已在开放馆藏中找到相关文件。请选择一个继续搜索。"
-                : `这次没有找到匹配的作品。可以让 AI 辨认画家姓名，或将 Wikimedia 检索范围扩展到全部 Commons。${suggestionError}`,
-            artworks: result.artworks,
-            suggestions,
-            query: plan.query,
-            scope,
-            providerOffsets: result.offsets,
-          },
-        ],
-      }));
+      setPhase("正在搜索馆藏与作品来源…");
+      const queries = [...new Set([plan.query, ...(plan.alternativeQueries || [])])].slice(0, 3);
+      const attempted: string[] = [];
+      let result: Awaited<ReturnType<typeof searchForCurator>> | undefined;
+      const warnings: string[] = [];
+      for (const query of queries) {
+        attempted.push(query);
+        result = await searchForCurator(query, { ...library.settings, scope: chosen?.scope || library.settings.scope }, controller.signal, plan);
+        if (result.warning) warnings.push(result.warning);
+        plan.query = query;
+        if (result.artworks.length || result.webResults.length || result.failed) break;
+        setPhase("本次无候选，正在尝试同一意图的替代关键词…");
+      }
+      if (result) await present({ ...result, queries: attempted, warning: [...new Set(warnings)].join(" ") });
+
     } catch (e) {
       if (!controller.signal.aborted)
         updateConversation(id, (c) => ({
@@ -960,7 +947,10 @@ export default function App() {
       updateConversation(active, (c) => ({
         ...c,
         messages: [
-          ...c.messages,
+          ...c.messages.map((message) => message.reviewPending ? { ...message, reviewPending: false, reviewCompleted: false,
+            text: "复核已停止，以下候选保留为待核实。",
+            artworks: message.artworks?.map((art) => ({ ...art, review: { verdict: "uncertain" as const, reason: "复核已停止，尚未确认。", confidence: 0, basis: "unavailable" as const, imageProvided: false, pageRead: false } })),
+          } : message),
           {
             id: crypto.randomUUID(),
             role: "assistant",
@@ -981,8 +971,16 @@ export default function App() {
     request.current = controller;
     try {
       const r = message.providerOffsets
-        ? await searchAcrossProviders(message.query!, message.scope || library.settings.scope, controller.signal, message.providerOffsets)
+        ? await searchAcrossProviders(message.query!, message.scope || library.settings.scope, controller.signal, message.providerOffsets, { targetArtist: message.targetArtist, artistAliases: message.artistAliases })
         : await searchArt(message.query!, message.scope || library.settings.scope, message.offset, controller.signal);
+      if (controller.signal.aborted) return;
+      const newArtworks = r.artworks.filter((art) => ![...(message.artworks || []), ...(message.rejectedArtworks || [])].some((old) => old.id === art.id));
+      const reviewed = library.settings.useAi && desktop && newArtworks.length
+        ? await reviewCandidates(message.originalRequest || message.query || "继续寻找", current.messages,
+          { query: message.query || "", explanation: "继续检索", targetArtist: message.targetArtist, artistAliases: message.artistAliases, criteria: message.searchCriteria },
+          newArtworks, [], library.settings, controller.signal, setPhase)
+        : { artworks: newArtworks, rejectedArtworks: [] as Artwork[], warning: "" };
+      if (controller.signal.aborted) return;
       updateConversation(id, (c) => ({
         ...c,
         messages: c.messages.map((m) =>
@@ -991,10 +989,11 @@ export default function App() {
                 ...m,
                 artworks: [
                   ...(m.artworks || []),
-                  ...r.artworks.filter(
-                    (a) => !m.artworks?.some((old) => old.id === a.id),
-                  ),
+                  ...reviewed.artworks.map((art) => ({ ...art, selectionReason: art.selectionReason || `继续检索“${message.query?.slice(0, 40)}”返回的候选。` })),
                 ],
+                rejectedArtworks: [...(m.rejectedArtworks || []), ...reviewed.rejectedArtworks],
+                reviewCompleted: m.reviewCompleted || (library.settings.useAi && desktop && newArtworks.length > 0),
+                searchWarning: [m.searchWarning, "warning" in r ? r.warning : "", reviewed.warning].filter(Boolean).join(" "),
                 offset: "offsets" in r ? undefined : r.offset,
                 providerOffsets: "offsets" in r ? r.offsets : undefined,
               }
@@ -1088,13 +1087,14 @@ export default function App() {
     setInput("");
     setFilter("");
   }
-  function cards(arts: Artwork[], showSimilar = false) {
+  function cards(arts: Artwork[], showSimilar = false, numbered = false) {
     return (
       <div className="gallery-grid">
-        {arts.map((art) => (
+        {arts.map((art, index) => (
           <ArtCard
             key={art.id}
             art={art}
+            position={numbered ? index + 1 : undefined}
             saved={savedFor(art.id)}
             pending={saving.includes(art.id)}
             onOpen={() => openViewer(art, false, arts)}
@@ -1359,7 +1359,7 @@ export default function App() {
           </div>
           <div className="source-chip">
             <span className="status-dot" />
-            Wikimedia · Cleveland · Chicago
+            Wikimedia · Cleveland · Chicago · Met
           </div>
         </header>
         {persistError && (
@@ -1821,7 +1821,29 @@ export default function App() {
                       <span>· {m.artworks?.length || 0} 件作品</span>
                     </div>
                   )}
-                  {!!m.artworks?.length && cards(m.artworks)}
+                  {m.searchWarning && <p className="search-notice">{m.searchWarning}</p>}
+                  {(m.searchCriteria || m.reviewCompleted) && <details className="review-audit">
+                    <summary>{m.reviewPending ? "正在复核候选…" : m.reviewCompleted
+                      ? `复核记录 · 保留 ${(m.artworks?.length || 0) + (m.webResults?.length || 0)} 项 · 待核实 ${[...(m.artworks || []), ...(m.webResults || [])].filter((item) => item.review?.verdict === "uncertain").length} 项 · 排除 ${(m.rejectedArtworks?.length || 0) + (m.rejectedWebResults?.length || 0)} 项`
+                      : "查看检索计划"}</summary>
+                    <p>检索词：{(m.searchQueries || [m.query]).filter(Boolean).join(" → ")}</p>
+                    {m.searchCriteria && <><p>必须：{m.searchCriteria.required.join("；") || "未指定"}</p><p>偏好：{m.searchCriteria.preferred.join("；") || "未指定"}</p><p>排除：{m.searchCriteria.excluded.join("；") || "未指定"}</p></>}
+                    {[...(m.artworks || []), ...(m.webResults || []), ...(m.rejectedArtworks || []), ...(m.rejectedWebResults || [])].filter((item) => item.review).map((item) => <div className={`review-audit-item ${item.review!.verdict}`} key={"id" in item ? item.id : item.url}>
+                      <strong>{item.review!.verdict === "reject" ? "已排除" : item.review!.verdict === "keep" ? "相关" : "待核实"} · {item.title}</strong>
+                      <p>{item.review!.reason}</p>
+                      <small>{item.review!.imageProvided ? "已提供缩略图" : "未提供图片"} · {item.review!.pageRead ? "已读来源页" : "来源页未读取"}{item.review!.quote ? ` · 引用：${item.review!.quote}` : ""}</small>
+                      <a href={"id" in item ? item.source : item.url} target="_blank" rel="noreferrer">查看来源 <ExternalLink size={12} /></a>
+                    </div>)}
+                  </details>}
+                  {!m.reviewPending && !!m.artworks?.length && <><p className="search-notice">作品已按顺序编号，可以直接追问某一张，或比较几张作品。</p>{cards(m.artworks, false, true)}</>}
+                  {!m.reviewPending && !!m.webResults?.length && <div className="web-results">
+                    <h3>全网作品线索 <small>作者与授权待核实</small></h3>
+                    <div className="web-result-grid">{m.webResults.map((item, index) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer">
+                      {item.thumbnail && <img src={item.thumbnail} loading="lazy" referrerPolicy="no-referrer" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+                      <strong>网页 {index + 1} · {item.title}</strong><span>{item.source} <ExternalLink size={12} /></span><p className="web-selection-reason">选择原因：{item.review?.reason || item.selectionReason || "搜索引擎返回的网页线索，作者与作品归属待核实。"}</p>{item.review && <span className={`review-status ${item.review.verdict}`}>复核：{item.review.verdict === "keep" ? "相关线索" : "待核实"} · {item.review.pageRead ? "已读来源页" : "来源页未读取"}</span>}
+                    </a>)}</div>
+                  </div>}
+                  {m.query && <a className="text-button external-search" href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(m.query)}`} target="_blank" rel="noreferrer"><Search size={14} />在 Google 图片中继续找<ExternalLink size={12} /></a>}
                   {(m.offset !== undefined || !!Object.keys(m.providerOffsets || {}).length) && (
                     <button
                       className="load-more"
@@ -2187,6 +2209,8 @@ function SettingsDialog({
   const [draft, setDraft] = useState(settings);
   const [key, setKey] = useState("");
   const [hasKey, setHasKey] = useState(false);
+  const [searchKey, setSearchKey] = useState("");
+  const [hasSearchKey, setHasSearchKey] = useState(false);
   const [folder, setFolder] = useState("");
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
@@ -2213,6 +2237,9 @@ function SettingsDialog({
       alive = false;
     };
   }, [draft.baseUrl]);
+  useEffect(() => {
+    if (desktop) void invoke<boolean>("has_api_key", { baseUrl: SEARCH_KEY_ADDRESS }).then(setHasSearchKey).catch(() => setHasSearchKey(false));
+  }, []);
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -2230,6 +2257,7 @@ function SettingsDialog({
       if (!draft.model.trim()) throw new Error("请填写模型名称");
       if (key && desktop)
         await invoke("save_api_key", { baseUrl: draft.baseUrl, key });
+      if (searchKey && desktop) await invoke("save_api_key", { baseUrl: SEARCH_KEY_ADDRESS, key: searchKey });
       onSave({
         ...draft,
         baseUrl: draft.baseUrl.trim().replace(/\/$/, ""),
@@ -2387,6 +2415,15 @@ function SettingsDialog({
                 删除此地址的已保存密钥
               </button>
             )}
+            <label className="toggle-row">
+              <span>全网搜图 <small>查找艺术家官网、画廊与其他作品页面；搜索词将发送给 Brave。</small></span>
+              <input type="checkbox" checked={!!draft.webSearch} disabled={!desktop} onChange={(e) => setDraft({ ...draft, webSearch: e.target.checked })} />
+            </label>
+            <label>
+              Brave Search API Key <span>{hasSearchKey ? "已安全保存在此电脑" : "可选，保存在系统凭据库"}</span>
+              <input type="password" autoComplete="off" disabled={!desktop} value={searchKey} placeholder={hasSearchKey ? "留空保留现有密钥" : "输入 Brave Search API 密钥"} onChange={(e) => setSearchKey(e.target.value)} />
+            </label>
+            {hasSearchKey && <button type="button" className="text-button danger" onClick={() => invoke("save_api_key", { baseUrl: SEARCH_KEY_ADDRESS, key: "" }).then(() => { setHasSearchKey(false); setSearchKey(""); }).catch((e) => setError(errorText(e)))}>删除全网搜图密钥</button>}
             <label>
               Wikimedia 检索范围
               <select
@@ -2434,9 +2471,7 @@ function SettingsDialog({
               </select>
             </label>
             <p className="field-hint">
-              无 AI 也可以直接搜索艺术家和主题。风格推荐会向所选 AI
-              服务发送对话文字及少量前文作品资料；作品讲解还会发送当前作品的
-              Commons 缩略图链接。API 密钥只保存在本机凭据库。
+              AI 会读取对话及实际搜索结果，并按需接收最多 3 张馆藏缩略图以比较作品；不支持图片的模型会改用文字资料。全网搜图需另行配置 Brave 密钥，网页线索可打开来源核实。密钥只保存在本机凭据库。
             </p>
             {error && (
               <p className="inline-error" role="alert">
