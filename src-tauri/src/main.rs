@@ -93,7 +93,25 @@ async fn switch_library(path:String,mode:String,app:tauri::AppHandle,state:State
     for directory in IMAGE_DIRS {app.asset_protocol_scope().allow_directory(target.join(directory),true).map_err(err)?;}
     s.root=target;s.last=read_optional(&s.root.join("library.json"))?;Ok(())
 }
-fn image_url(url:&str)->Result<reqwest::Url,String>{let u=reqwest::Url::parse(url).map_err(err)?;let host=u.host_str().unwrap_or("");let path=u.path();let trusted=match host{"upload.wikimedia.org"|"thumb.wikimedia.org"=>true,"openaccess-cdn.clevelandart.org"=>path.ends_with("_web.jpg")||path.ends_with("_print.jpg"),"www.artic.edu"=>path.starts_with("/iiif/2/")&&path.ends_with("/0/default.jpg"),_=>false};if u.scheme()!="https"||!trusted||u.port().is_some()||!u.username().is_empty()||u.password().is_some()||u.query().is_some()||u.fragment().is_some(){return Err("只允许已核准馆藏的 HTTPS 图片地址".into())}Ok(u)}
+fn image_url(url:&str)->Result<reqwest::Url,String>{
+    let mut u=reqwest::Url::parse(url).map_err(err)?;
+    let host=u.host_str().unwrap_or("");
+    let path=u.path();
+    let wikimedia=matches!(host,"upload.wikimedia.org"|"thumb.wikimedia.org");
+    let trusted=match host{
+        "upload.wikimedia.org"|"thumb.wikimedia.org"=>true,
+        "openaccess-cdn.clevelandart.org"=>path.ends_with("_web.jpg")||path.ends_with("_print.jpg"),
+        "www.artic.edu"=>path.starts_with("/iiif/2/")&&path.ends_with("/0/default.jpg"),
+        _=>false,
+    };
+    if u.scheme()!="https"||!trusted||u.port().is_some()||!u.username().is_empty()||u.password().is_some()||(!wikimedia&&u.query().is_some())||u.fragment().is_some(){
+        return Err("只允许已核准馆藏的 HTTPS 图片地址".into())
+    }
+    // Commons imageinfo adds attribution/tracking query parameters to static CDN URLs.
+    // Never forward those parameters; fetch the same trusted image path directly.
+    if wikimedia {u.set_query(None);}
+    Ok(u)
+}
 fn museum_cooldown(state:&AppState,provider:&str)->Result<(),String>{let limits=state.museum_cooldowns.lock().map_err(err)?;if let Some(remaining)=limits.get(provider).and_then(|until|until.checked_duration_since(Instant::now())){return Err(format!("{provider} 暂时受限（HTTP 429），请约 {} 分钟后再试。",remaining.as_secs().div_ceil(60).max(1)))}Ok(())}
 fn note_museum_cooldown(state:&AppState,provider:&str,response:&reqwest::Response)->String{let seconds=response.headers().get(reqwest::header::RETRY_AFTER).and_then(|header|header.to_str().ok()).and_then(|value|value.parse::<u64>().ok()).unwrap_or(300).clamp(60,3600);if let Ok(mut limits)=state.museum_cooldowns.lock(){limits.insert(provider.to_string(),Instant::now()+Duration::from_secs(seconds));}format!("{provider} 暂时受限（HTTP 429），请约 {} 分钟后再试。",seconds.div_ceil(60))}
 #[tauri::command]
@@ -365,6 +383,13 @@ mod tests {use super::*;
     }
     #[test]fn native_asset_path_omits_windows_device_prefix(){assert_eq!(webview_path(std::path::Path::new(r"\\?\D:\Gallery\images\1.jpg")),r"D:\Gallery\images\1.jpg");assert_eq!(webview_path(std::path::Path::new(r"\\?\UNC\server\Gallery\1.jpg")),r"\\server\Gallery\1.jpg");}
     #[test]fn reject_untrusted_images(){assert!(image_url("https://upload.wikimedia.org/a.jpg").is_ok());assert!(image_url("https://openaccess-cdn.clevelandart.org/1998.78.14/1998.78.14_print.jpg").is_ok());assert!(image_url("https://www.artic.edu/iiif/2/id/full/843,/0/default.jpg").is_ok());assert!(image_url("https://upload.wikimedia.org.evil.test/a").is_err());assert!(image_url("https://openaccess-cdn.clevelandart.org.evil.test/a_print.jpg").is_err());assert!(image_url("file:///etc/passwd").is_err());}
+    #[test]fn commons_imageinfo_query_is_removed_before_download(){
+        let original="https://upload.wikimedia.org/wikipedia/commons/6/66/VanGogh-starry_night_ballance1.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original";
+        assert_eq!(image_url(original).unwrap().as_str(),"https://upload.wikimedia.org/wikipedia/commons/6/66/VanGogh-starry_night_ballance1.jpg");
+        assert_eq!(image_url("https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ab/art.jpg/640px-art.jpg?utm_source=commons.wikimedia.org").unwrap().query(),None);
+        assert!(image_url("https://upload.wikimedia.org.evil.test/a.jpg?utm_source=commons.wikimedia.org").is_err());
+        assert!(image_url("https://www.artic.edu/iiif/2/id/full/843,/0/default.jpg?utm_source=commons.wikimedia.org").is_err());
+    }
     #[test]fn endpoint_security(){assert!(endpoint("https://example.com/v1").is_ok());assert!(endpoint("http://127.0.0.1:11434/v1").is_ok());assert!(endpoint("http://example.com/v1").is_err());assert!(endpoint("https://user:secret@example.com").is_err());}
     fn fixture()->LibraryState {let root=std::env::temp_dir().join(format!("atelier-test-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));fs::create_dir_all(root.join("images")).unwrap();LibraryState{root,last:None}}
     fn data(label:&str)->String{json!({"version":1,"conversations":[],"saved":[],"label":label}).to_string()}
