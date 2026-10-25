@@ -15,6 +15,26 @@ export function extractPageText(html: string): { title: string; text: string } {
   const main = cleaned.match(/<(?:main|article)\b[^>]*>([\s\S]*?)<\/(?:main|article)\s*>/i)?.[1] || cleaned;
   return { title, text: plain(main).slice(0, 4000) };
 }
+export function extractPageBlocks(html: string, baseUrl: string): NonNullable<PageEvidence["blocks"]> {
+  if (typeof DOMParser === "undefined") return [];
+  const doc = new DOMParser().parseFromString(html.slice(0, 512 * 1024), "text/html");
+  doc.querySelectorAll("script,style,svg,noscript,iframe,nav,footer,header,[hidden],[aria-hidden='true']").forEach((node) => node.remove());
+  const regions = [...doc.querySelectorAll("article,figure")];
+  const targets = regions.length ? regions : [...doc.querySelectorAll("main")].slice(0, 1);
+  return targets.slice(0, 8).flatMap((node) => {
+    const title = plain(node.querySelector("h1,h2,h3,h4")?.textContent || node.querySelector("figcaption")?.textContent || (regions.length ? "" : doc.title)).slice(0, 200);
+    const text = plain(node.textContent || "").slice(0, 700);
+    if (text.length < 30) return [];
+    const imageUrls = [...node.querySelectorAll("img")].slice(0, 4).flatMap((image) => {
+      try {
+        const url = new URL(image.getAttribute("src") || image.getAttribute("data-src") || "", baseUrl);
+        const valid = publicHttps(url.href);
+        return valid ? [valid] : [];
+      } catch { return []; }
+    });
+    return [{ title, text, imageUrls }];
+  });
+}
 export function isGatePage(title: string, text: string): boolean {
   return /^(?:access denied|forbidden|just a moment|checking your browser|robot check|captcha|sign in|log in|please enable javascript)/i.test(title.trim()) ||
     /(?:verify you are human|complete the captcha|enable javascript to continue)/i.test(text.slice(0, 350));
@@ -32,8 +52,9 @@ export async function readPageEvidence(url: string, signal: AbortSignal): Promis
     const response = await invoke<{ url: string; html: string }>("read_source_page", { url: valid });
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
     const extracted = extractPageText(response.html);
+    const finalUrl = publicHttps(response.url) || valid;
     const evidence: PageEvidence = extracted.text.length >= 40 && !isGatePage(extracted.title, extracted.text)
-      ? { url: publicHttps(response.url) || valid, ...extracted, status: "read" }
+      ? { url: finalUrl, ...extracted, blocks: extractPageBlocks(response.html, finalUrl), status: "read" }
       : unavailable("页面没有足够的可读文字，可能需要登录或由脚本加载");
     if (cache.size >= 100) cache.delete(cache.keys().next().value!);
     cache.set(valid, { time: Date.now(), evidence });

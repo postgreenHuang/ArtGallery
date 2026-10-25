@@ -15,7 +15,8 @@ const candidate = (key = "art:1"): ReviewCandidate => ({
 });
 const decision = (key: string, overrides: Record<string, unknown> = {}) => ({
   key, verdict: "reject", reason: "自画像不符合排除肖像的要求", confidence: 0.95,
-  basis: "metadata", quote: "Self-Portrait", ...overrides,
+  basis: "metadata", quote: "Self-Portrait",
+  assessments: [{ criterionId: "excluded-0", verdict: "contradicts", reason: "明确为肖像" }], ...overrides,
 });
 const response = (...items: unknown[]) => JSON.stringify({ decisions: items });
 const criteria = { required: ["风景"], preferred: ["冷色"], excluded: ["肖像"], requiresImage: true };
@@ -47,9 +48,27 @@ describe("grounded per-candidate review", () => {
     const supported = { ...web, page: { ...web.page, text: "Monet Water Lilies — a portrait, not a landscape." } };
     expect(parseReview(response(decision("web:0", { basis: "page", quote: "a portrait" })), [supported], new Set()).get("web:0")?.verdict).toBe("reject");
   });
+  it("will not borrow a quote from a different artwork block on the same page", () => {
+    const web = { ...candidate("web:0"), title: "Quiet River", page: {
+      status: "read" as const, url: "https://gallery.example/list", title: "Exhibition",
+      text: "Quiet River is blue. Red Portrait depicts a person.",
+      blocks: [
+        { title: "Quiet River", text: "Quiet River is blue.", imageUrls: [] },
+        { title: "Red Portrait", text: "Red Portrait depicts a person.", imageUrls: [] },
+      ],
+    } };
+    expect(parseReview(response(decision("web:0", { basis: "page", quote: "depicts a person" })), [web], new Set()).get("web:0")?.verdict).toBe("uncertain");
+  });
   it("does not confirm image-dependent matches from text alone", () => {
     const result = parseReview(response(decision("art:1", { verdict: "keep" })), [candidate()], new Set(), criteria);
     expect(result.get("art:1")?.verdict).toBe("uncertain");
+  });
+  it("does not reject a candidate merely because a soft preference is unmet", () => {
+    const softOnly = { required: [], preferred: ["冷色"], excluded: [], requiresImage: false };
+    const judged = decision("art:1", { assessments: [{ criterionId: "preferred-0", verdict: "contradicts", reason: "暖色" }] });
+    const result = parseReview(response(judged), [candidate()], new Set(), softOnly).get("art:1");
+    expect(result?.verdict).toBe("uncertain");
+    expect(result?.assessments?.[0].criterionId).toBe("preferred-0");
   });
 });
 

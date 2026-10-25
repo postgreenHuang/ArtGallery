@@ -1,3 +1,6 @@
+import type { ArtistAttribution, ArtworkFacets, ImageAsset, CriterionAssessment } from "./domain/artwork";
+import type { ExploreIntent } from "./domain/intent";
+
 export interface Artwork {
   id: number;
   provider?: "cleveland" | "chicago" | "met";
@@ -16,6 +19,10 @@ export interface Artwork {
   license: string;
   licenseUrl: string;
   attribution: string;
+  recordKey?: string;
+  artistAttribution?: ArtistAttribution;
+  facets?: ArtworkFacets;
+  assets?: ImageAsset[];
   selectionReason?: string;
   curatorReason?: string;
   pageEvidence?: PageEvidence;
@@ -33,6 +40,7 @@ export interface PageEvidence {
   text: string;
   status: "read" | "unavailable";
   error?: string;
+  blocks?: { title: string; text: string; imageUrls: string[] }[];
 }
 export interface CandidateReview {
   verdict: "keep" | "reject" | "uncertain";
@@ -42,6 +50,7 @@ export interface CandidateReview {
   quote?: string;
   imageProvided: boolean;
   pageRead: boolean;
+  assessments?: CriterionAssessment[];
 }
 export interface Message {
   id: string;
@@ -59,6 +68,7 @@ export interface Message {
   error?: boolean;
   suggestions?: ArtistSuggestion[];
   searchCriteria?: SearchCriteria;
+  exploreIntent?: ExploreIntent;
   originalRequest?: string;
   reviewCompleted?: boolean;
   reviewPending?: boolean;
@@ -112,6 +122,7 @@ export interface Library {
   conversations: Conversation[];
   saved: SavedArtwork[];
   viewed: Artwork[];
+  discoveryExposure?: { ids: number[]; artistKeys: string[]; topics: string[]; offsets: Record<string, number> };
   settings: Settings;
 }
 export const defaultLibrary: Library = {
@@ -119,6 +130,7 @@ export const defaultLibrary: Library = {
   conversations: [],
   saved: [],
   viewed: [],
+  discoveryExposure: { ids: [], artistKeys: [], topics: [], offsets: {} },
   settings: {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",

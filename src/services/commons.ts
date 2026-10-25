@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./storage";
 import type { Artwork } from "../types";
+import { parseAttribution, providerFacet } from "../domain/artwork";
 type Meta = Record<string, { value?: string }>;
 interface Page {
   pageid: number;
@@ -69,18 +70,23 @@ export function normalize(page: Page): Artwork | null {
     return null;
   const m = i.extmetadata || {};
   const field = (key: string) => plain(m[key]?.value);
+  const artist = field("Artist") || "艺术家未标注";
+  const source = `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title)}`;
   return {
     id: page.pageid,
+    recordKey: `commons:${page.pageid}`,
     file: page.title,
     title:
       field("ObjectName") ||
       page.title.replace(/^File:/, "").replace(/\.[^.]+$/, ""),
-    artist: field("Artist") || "艺术家未标注",
+    artist,
+    artistAttribution: parseAttribution(artist, source),
+    facets: { medium: providerFacet(field("Medium"), source) },
     date: field("DateTimeOriginal") || "年代未标注",
     description: field("ImageDescription"),
     thumb: i.thumburl,
     original: i.url,
-    source: `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title)}`,
+    source,
     width: i.width,
     height: i.height,
     license: field("LicenseShortName") || "授权待核实",

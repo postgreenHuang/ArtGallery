@@ -19,6 +19,12 @@ export async function readLibrary(): Promise<Library> {
   return {
     ...parsed,
     viewed: Array.isArray(parsed.viewed) ? parsed.viewed : [],
+    discoveryExposure: parsed.discoveryExposure && Array.isArray(parsed.discoveryExposure.ids)
+      ? { ids: parsed.discoveryExposure.ids.filter((id) => Number.isSafeInteger(id)).slice(-500),
+        artistKeys: Array.isArray(parsed.discoveryExposure.artistKeys) ? parsed.discoveryExposure.artistKeys.filter((key): key is string => typeof key === "string").slice(-200) : [],
+        topics: Array.isArray(parsed.discoveryExposure.topics) ? parsed.discoveryExposure.topics.filter((key): key is string => typeof key === "string").slice(0, 5) : [],
+        offsets: parsed.discoveryExposure.offsets && typeof parsed.discoveryExposure.offsets === "object" ? parsed.discoveryExposure.offsets : {} }
+      : { ids: [], artistKeys: [], topics: [], offsets: {} },
     settings: { ...defaultLibrary.settings, ...parsed.settings },
   };
 }

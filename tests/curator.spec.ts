@@ -55,8 +55,8 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
             const payload = JSON.parse(typeof last === "string" ? last : last[0].text);
             if (slowPageReview && payload.candidates.some((item: any) => item.title === "Second Portrait")) return new Promise(() => {});
             return JSON.stringify({ decisions: payload.candidates.map((item: any) => {
-              if (reviewScenario && ["Portrait Study", "Second Portrait"].includes(item.title)) return { key: item.key, verdict: "reject", reason: "来源页注明这是自画像", confidence: 0.96, basis: "page", quote: "Self-Portrait" };
-              if (reviewScenario && item.title === "Art landscapes archive") return { key: item.key, verdict: "reject", reason: "网页是素材照片而非画作", confidence: 0.96, basis: "page", quote: "stock photos" };
+              if (reviewScenario && ["Portrait Study", "Second Portrait"].includes(item.title)) return { key: item.key, verdict: "reject", reason: "来源页注明这是自画像", confidence: 0.96, basis: "page", quote: "Self-Portrait", assessments: [{ criterionId: "excluded-0", verdict: "contradicts", reason: "自画像违反排除肖像" }] };
+              if (reviewScenario && item.title === "Art landscapes archive") return { key: item.key, verdict: "reject", reason: "网页是素材照片而非画作", confidence: 0.96, basis: "page", quote: "stock photos", assessments: [{ criterionId: "required-0", verdict: "contradicts", reason: "素材照片不是风景画" }] };
               if (reviewScenario && item.title === "Untitled Study") return { key: item.key, verdict: "uncertain", reason: "画面条件无法确认", confidence: 0.5, basis: "metadata", quote: "Untitled Study" };
               if (reviewScenario) return { key: item.key, verdict: "keep", reason: "画面符合风景条件", confidence: 0.9, basis: "image", quote: "" };
               return item.key.startsWith("art:")

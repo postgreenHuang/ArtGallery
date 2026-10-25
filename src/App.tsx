@@ -58,9 +58,10 @@ import {
 import { highResolution, searchArt } from "./services/commons";
 import { searchAcrossProviders, searchForCurator } from "./services/artSearch";
 import { reviewCandidates } from "./services/review";
-import { SEARCH_KEY_ADDRESS } from "./services/webSearch";
+import { SEARCH_KEY_ADDRESS, searchWebPages } from "./services/webSearch";
 import { museumName } from "./services/museums";
 import { discoverArt } from "./services/discovery";
+import { buildExploreIntent } from "./domain/intent";
 import { ViewerFullscreenController } from "./services/viewerFullscreen";
 import {
   artworkIntroductionPrompt,
@@ -361,6 +362,7 @@ export default function App() {
   const discoverRequest = useRef<AbortController | null>(null);
   const discoverArtists = useRef<string[]>([]);
   const discoverSeen = useRef(new Set<number>());
+  const discoverArtistSeen = useRef(new Set<string>());
   const discoverOffsets = useRef<Record<string, number>>({});
   const discoverScope = useRef(library.settings.scope);
   const [busy, setBusy] = useState(false);
@@ -535,10 +537,13 @@ export default function App() {
   }, [current?.messages.length, busy, view]);
   useEffect(() => {
     if (!ready) return;
+    discoverSeen.current = new Set(library.discoveryExposure?.ids || []);
+    discoverArtistSeen.current = new Set(library.discoveryExposure?.artistKeys || []);
+    discoverArtists.current = library.discoveryExposure?.topics || [];
+    discoverOffsets.current = library.discoveryExposure?.offsets || {};
     if (discoverScope.current !== library.settings.scope) {
       discoverScope.current = library.settings.scope;
       discoverArtists.current = [];
-      discoverSeen.current.clear();
       discoverOffsets.current = {};
     }
     void refreshDiscovery();
@@ -558,14 +563,24 @@ export default function App() {
         discoverSeen.current,
         discoverOffsets.current,
         controller.signal,
+        discoverArtistSeen.current,
       );
       if (controller.signal.aborted) return;
       if (!result.artworks.length) {
-        setDiscoverError("这组画家暂时没有可展示的作品，请再刷新一次。");
+        setDiscoverError("这组主题暂时没有可展示的作品，请再刷新一次。");
       } else {
         discoverArtists.current = result.artists;
         discoverOffsets.current = result.offsets;
         result.artworks.forEach((art) => discoverSeen.current.add(art.id));
+        result.artworks.forEach((art) => {
+          const key = art.artist.trim().toLocaleLowerCase();
+          if (key && key !== "艺术家未标注") discoverArtistSeen.current.add(key);
+        });
+        setLibrary((current) => ({ ...current, discoveryExposure: {
+          ids: [...new Set([...(current.discoveryExposure?.ids || []), ...result.artworks.map((art) => art.id)])].slice(-500),
+          artistKeys: [...new Set([...(current.discoveryExposure?.artistKeys || []), ...result.artworks.map((art) => art.artist.trim().toLocaleLowerCase()).filter((key) => key && key !== "艺术家未标注")])].slice(-200),
+          topics: result.artists, offsets: result.offsets,
+        } }));
         setDiscover(result.artworks);
         setDiscoverError(result.warning);
       }
@@ -842,10 +857,13 @@ export default function App() {
       const present = async (result: { artworks: Artwork[]; webResults: WebResult[]; warning: string; scope: Settings["scope"]; offsets?: Message["providerOffsets"]; suggestions?: ArtistSuggestion[]; failed?: boolean; queries?: string[] }) => {
         const responseId = crypto.randomUUID();
         const needsReview = library.settings.useAi && desktop && (result.artworks.length > 0 || result.webResults.length > 0);
+        const previousIntent = [...history].reverse().find((item) => item.exploreIntent)?.exploreIntent;
+        const exploreIntent = buildExploreIntent({ request: text, targetArtist: plan.targetArtist, criteria: plan.criteria,
+          previous: continueExisting ? previousIntent : undefined, anchorWorkKeys: similarTo ? [similarTo.recordKey || `${similarTo.provider || "commons"}:${similarTo.id}`] : [] });
         const message: Message = { id: responseId, role: "assistant", text: needsReview ? "已搜到候选，正在逐件复核资料与缩略图…" : "正在整理搜索结果…", error: result.failed,
           artworks: result.artworks, webResults: result.webResults, searchWarning: result.warning,
           query: plan.query, targetArtist: plan.targetArtist, artistAliases: plan.artistAliases,
-          searchCriteria: plan.criteria, originalRequest: text, searchQueries: result.queries || [plan.query],
+          searchCriteria: plan.criteria, exploreIntent, originalRequest: text, searchQueries: result.queries || [plan.query],
           reviewPending: needsReview, scope: result.scope, providerOffsets: result.offsets, suggestions: result.suggestions };
         if (controller.signal.aborted) return;
         // Save all candidates before review; the main wall waits for review to finish.
@@ -910,13 +928,29 @@ export default function App() {
       const attempted: string[] = [];
       let result: Awaited<ReturnType<typeof searchForCurator>> | undefined;
       const warnings: string[] = [];
-      for (const query of queries) {
+      let firstWebResults: WebResult[] = [];
+      for (const [index, query] of queries.entries()) {
         attempted.push(query);
-        result = await searchForCurator(query, { ...library.settings, scope: chosen?.scope || library.settings.scope }, controller.signal, plan);
-        if (result.warning) warnings.push(result.warning);
+        const searched = await searchForCurator(query, { ...library.settings, scope: chosen?.scope || library.settings.scope,
+          webSearch: index === 0 && library.settings.webSearch }, controller.signal, plan);
+        if (searched.warning) warnings.push(searched.warning);
+        if (index === 0) firstWebResults = searched.webResults;
+        result = { ...searched, webResults: index === 0 ? searched.webResults : firstWebResults.map((item) => ({ ...item, selectionReason: item.selectionReason || "网页图片线索，作者待核实。" })) };
         plan.query = query;
-        if (result.artworks.length || result.webResults.length || result.failed) break;
-        setPhase("本次无候选，正在尝试同一意图的替代关键词…");
+        if (searched.artworks.length || searched.failed && !firstWebResults.length) break;
+        if (index < queries.length - 1) setPhase("相关馆藏不足，正在尝试同一意图的替代关键词…");
+      }
+      if (result && !result.artworks.length && library.settings.webSearch && desktop && !result.failed) {
+        setPhase("馆藏作品不足，正在补充作者与作品的来源网页…");
+        try {
+          const pages = await searchWebPages(attempted[0], controller.signal);
+          if (controller.signal.aborted) return;
+          const seen = new Set(result.webResults.map((item) => item.url));
+          result = { ...result, webResults: [...result.webResults, ...pages.filter((item) => !seen.has(item.url)).map((item) => ({ ...item, selectionReason: item.selectionReason || "网页来源线索，待与馆藏记录核对。" }))] };
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          warnings.push(`网页来源检索暂不可用：${errorText(error)}`);
+        }
       }
       if (result) await present({ ...result, queries: attempted, warning: [...new Set(warnings)].join(" ") });
 
@@ -1461,7 +1495,7 @@ export default function App() {
                   </button>
                 </div>
                 <div className="collection-toolbar">
-                  <span>跨越年代 · 每次遇见不同的画家</span>
+                  <span>跨越题材与媒材 · 发现不熟悉的画家</span>
                   <span>
                     WIKIMEDIA <span className="middle-dot">·</span> CLEVELAND <span className="middle-dot">·</span> CHICAGO
                   </span>

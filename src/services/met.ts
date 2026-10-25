@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./storage";
 import type { Artwork } from "../types";
 import { plain } from "./commons";
+import { parseAttribution, providerFacet, providerFacets } from "../domain/artwork";
 
 interface MetRecord {
   objectID: number;
@@ -10,6 +11,9 @@ interface MetRecord {
   artistDisplayName?: string;
   objectDate?: string;
   medium?: string;
+  classification?: string;
+  culture?: string;
+  tags?: { term?: string }[];
   primaryImage?: string;
   primaryImageSmall?: string;
   creditLine?: string;
@@ -30,11 +34,15 @@ function metImage(value: unknown): value is string {
 }
 export function normalizeMet(record: MetRecord | null): Artwork | null {
   if (!record || !Number.isSafeInteger(record.objectID) || record.objectID <= 0 || record.objectID >= 1_000_000_000_000 || !record.isPublicDomain || !metImage(record.primaryImage) || !metImage(record.primaryImageSmall)) return null;
-  return { id: 3_000_000_000_000 + record.objectID, provider: "met", file: `MET:${record.objectID}`,
-    title: plain(record.title) || "未命名作品", artist: plain(record.artistDisplayName) || "艺术家未标注",
+  const source = `https://www.metmuseum.org/art/collection/search/${record.objectID}`;
+  const artist = plain(record.artistDisplayName) || "艺术家未标注";
+  return { id: 3_000_000_000_000 + record.objectID, provider: "met", recordKey: `met:${record.objectID}`, file: `MET:${record.objectID}`,
+    title: plain(record.title) || "未命名作品", artist, artistAttribution: parseAttribution(artist, source),
     date: plain(record.objectDate) || "年代未标注", description: plain(record.medium),
+    facets: { objectType: providerFacet(plain(record.classification), source), medium: providerFacet(plain(record.medium), source),
+      culture: providerFacet(plain(record.culture), source), subjects: providerFacets(record.tags?.map((tag) => plain(tag.term)), source) },
     thumb: record.primaryImageSmall, medium: record.primaryImageSmall, hd: record.primaryImage,
-    original: record.primaryImage, source: `https://www.metmuseum.org/art/collection/search/${record.objectID}`,
+    original: record.primaryImage, source,
     width: 0, height: 0, license: "Public domain", licenseUrl: "https://www.metmuseum.org/policies/image-resources",
     attribution: `The Metropolitan Museum of Art · ${plain(record.creditLine)}` };
 }

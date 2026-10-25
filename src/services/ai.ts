@@ -248,6 +248,7 @@ export function curatorHistory(history: Message[]) {
     content: JSON.stringify({ text: message.text.slice(0, 1800), query: message.query,
       latestDisplayedResults: message === anchor,
       targetArtist: message.targetArtist, warning: message.searchWarning, criteria: message.searchCriteria,
+      exploreIntent: message.exploreIntent,
       rejected: [...(message.rejectedArtworks || []).map((art) => ({ title: art.title, artist: art.artist, review: art.review })), ...(message.rejectedWebResults || []).map((item) => ({ title: item.title, url: item.url, review: item.review }))].slice(0, 36),
       ...resultContext(message.artworks || [], message.webResults),
     }),

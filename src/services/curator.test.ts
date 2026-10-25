@@ -5,7 +5,7 @@ vi.mock("./storage", () => ({ desktop: true }));
 import { curatorHistory, referencedImages, parsePlan, parseCuratorReply, curateResults, planSearch, replyFromResults } from "./ai";
 import { matchesArtist, searchAcrossProviders, searchForCurator } from "./artSearch";
 import { normalizeMet, searchMet } from "./met";
-import { normalizeWebResults, publicHttps } from "./webSearch";
+import { normalizeWebPageResults, normalizeWebResults, publicHttps } from "./webSearch";
 import { defaultLibrary, type Artwork, type Message } from "../types";
 
 const art = { id: 1, title: "Water lilies", artist: "Claude Monet", date: "1916", description: "Pond", source: "https://www.metmuseum.org/art/collection/search/1" } as Artwork;
@@ -14,6 +14,16 @@ const met = { objectID: 1, isPublicDomain: true, title: "Garden", artistDisplayN
 beforeEach(() => { invoke.mockReset(); });
 
 describe("curator grounded conversation", () => {
+  it("keeps web-page sources separate from image search and rejects unsafe or duplicate links", () => {
+    const pages = normalizeWebPageResults({ web: { results: [
+      { url: "https://museum.example/work", title: "<b>Artwork</b>", description: "Official collection" },
+      { url: "https://museum.example/work", title: "Duplicate" },
+      { url: "http://127.0.0.1/private", title: "Unsafe" },
+    ] } });
+    expect(pages).toHaveLength(1);
+    expect(pages[0]).toMatchObject({ title: " Artwork ", source: "museum.example" });
+    expect(pages[0].thumbnail).toBeUndefined();
+  });
   it("ties concise selection reasons to actual IDs and rejects unseen visual claims", () => {
     const parsed = parseCuratorReply(JSON.stringify({ text: "结果说明", selectionReasons: [
       { id: 1, reason: "作者与指定姓名一致。", basis: "metadata" },
@@ -90,6 +100,8 @@ describe("artist search precision and source isolation", () => {
     expect(matchesArtist({ ...art, artist: "Other Rohovyi" }, constraints)).toBe(false);
     expect(matchesArtist({ ...art, artist: "Artem Rogovoi (Ukrainian)" }, constraints)).toBe(true);
     expect(matchesArtist({ ...art, artist: "Paul Cézanne" }, { targetArtist: "Paul Cezanne" })).toBe(true);
+    expect(matchesArtist({ ...art, artist: "After Claude Monet" }, { targetArtist: "Claude Monet" })).toBe(false);
+    expect(matchesArtist({ ...art, artist: "Workshop of Claude Monet" }, { targetArtist: "Claude Monet" })).toBe(false);
   });
   it("filters the screenshot's unrelated artists while keeping pagination for later matches", async () => {
     invoke.mockImplementation(async (cmd) => {

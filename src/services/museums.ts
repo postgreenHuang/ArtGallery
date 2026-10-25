@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Artwork } from "../types";
 import { desktop } from "./storage";
 import { plain } from "./commons";
+import { parseAttribution, providerFacet, providerFacets } from "../domain/artwork";
 
 export type Museum = "cleveland" | "chicago";
 const OFFSET = { cleveland: 1_000_000_000_000, chicago: 2_000_000_000_000 };
@@ -37,6 +38,7 @@ interface ClevelandRecord {
   accession_number?: string;
   share_license_status?: string;
   type?: string;
+  culture?: string | string[];
   images?: { web?: { url?: string; width?: number; height?: number }; print?: { url?: string; width?: number; height?: number } };
 }
 interface ChicagoRecord {
@@ -50,6 +52,10 @@ interface ChicagoRecord {
   is_public_domain?: boolean;
   credit_line?: string;
   thumbnail?: { width?: number; height?: number };
+  medium_display?: string;
+  classification_title?: string;
+  style_titles?: string[];
+  subject_titles?: string[];
 }
 export function normalizeCleveland(record: ClevelandRecord): Artwork | null {
   const id = museumId("cleveland", record.id);
@@ -57,12 +63,16 @@ export function normalizeCleveland(record: ClevelandRecord): Artwork | null {
   const original = record.images?.print?.url || "";
   if (!id || record.share_license_status !== "CC0" || !safeMuseumImage(thumb, "cleveland") || !safeMuseumImage(original, "cleveland")) return null;
   const artist = record.creators?.find((creator) => creator.role === "artist")?.description || record.creators?.[0]?.description;
+  const source = `https://www.clevelandart.org/art/${encodeURIComponent(record.accession_number || String(record.id))}`;
+  const culture = Array.isArray(record.culture) ? record.culture.join("; ") : record.culture;
   return {
-    id, provider: "cleveland", file: `CMA:${record.id}`,
+    id, provider: "cleveland", recordKey: `cleveland:${record.id}`, file: `CMA:${record.id}`,
     title: plain(record.title) || "未命名作品", artist: plain(artist) || "艺术家未标注",
+    artistAttribution: parseAttribution(plain(artist) || "艺术家未标注", source),
+    facets: { objectType: providerFacet(plain(record.type), source), medium: providerFacet(plain(record.technique), source), culture: providerFacet(plain(culture), source) },
     date: plain(record.creation_date) || "年代未标注",
     description: plain(record.description), thumb, medium: thumb, hd: original,
-    original, source: `https://www.clevelandart.org/art/${encodeURIComponent(record.accession_number || String(record.id))}`,
+    original, source,
     width: Number(record.images?.print?.width) || 0, height: Number(record.images?.print?.height) || 0,
     license: "CC0 · 馆方高清 JPEG", licenseUrl: "https://www.clevelandart.org/open-access",
     attribution: `The Cleveland Museum of Art${record.creditline ? ` · ${plain(record.creditline)}` : ""}`,
@@ -77,17 +87,31 @@ export function normalizeChicago(record: ChicagoRecord, iiifBase: string): Artwo
   const medium = `${base}843,/0/default.jpg`;
   const hd = `${base}1686,/0/default.jpg`;
   const original = `${base}full/0/default.jpg`;
+  const source = `https://www.artic.edu/artworks/${record.id}`;
+  const artist = plain(record.artist_display || record.artist_title) || "艺术家未标注";
   return {
-    id, provider: "chicago", file: `AIC:${record.id}`,
+    id, provider: "chicago", recordKey: `chicago:${record.id}`, file: `AIC:${record.id}`,
     title: plain(record.title) || "未命名作品",
-    artist: plain(record.artist_display || record.artist_title) || "艺术家未标注",
+    artist, artistAttribution: parseAttribution(artist, source),
+    facets: { objectType: providerFacet(plain(record.classification_title), source), medium: providerFacet(plain(record.medium_display), source),
+      styles: providerFacets(record.style_titles?.map(plain), source), subjects: providerFacets(record.subject_titles?.map(plain), source) },
     date: plain(record.date_display) || "年代未标注",
     description: plain(record.description), thumb, medium, hd, original,
-    source: `https://www.artic.edu/artworks/${record.id}`,
+    source,
     width: Number(record.thumbnail?.width) || 0, height: Number(record.thumbnail?.height) || 0,
     license: "Public domain", licenseUrl: "https://www.artic.edu/image-licensing",
     attribution: `Art Institute of Chicago${record.credit_line ? ` · ${plain(record.credit_line)}` : ""}`,
   };
+}
+
+export function clevelandSearchParams(query: string, offset = 0, targetArtist?: string): URLSearchParams {
+  const params = new URLSearchParams({ q: query.slice(0, 160), skip: String(offset), limit: "8", has_image: "1" });
+  params.set("cc0", "");
+  if (targetArtist) params.set("artists", targetArtist.slice(0, 120));
+  // Watercolor may be catalogued as a painting or a drawing. Keep that query broad.
+  if (/\b(?:woodcut|etching|lithograph|printmaking|prints?)\b|版画|木刻|蚀刻|石版画/i.test(query)) params.set("type", "Print");
+  else if (/\b(?:drawings?|sketches?)\b|素描|速写/i.test(query)) params.set("type", "Drawing");
+  return params;
 }
 
 const cooldown = new Map<Museum, number>();
@@ -106,24 +130,20 @@ async function museumApi(museum: Museum, params: URLSearchParams, signal?: Abort
   return response.json();
 }
 
-export async function searchMuseum(museum: Museum, query: string, offset = 0, signal?: AbortSignal): Promise<{ artworks: Artwork[]; offset?: number }> {
+export async function searchMuseum(museum: Museum, query: string, offset = 0, signal?: AbortSignal, targetArtist?: string): Promise<{ artworks: Artwork[]; offset?: number }> {
   const size = 8;
-  const params = new URLSearchParams();
-  params.set("q", query.slice(0, 160));
   if (museum === "cleveland") {
-    params.set("skip", String(offset));
-    params.set("limit", String(size));
-    params.set("has_image", "1");
-    params.set("cc0", "");
-    params.set("type", "Painting");
+    const params = clevelandSearchParams(query, offset, targetArtist);
     const result = await museumApi(museum, params, signal) as { info?: { total?: number }; data?: ClevelandRecord[] };
     const records = Array.isArray(result.data) ? result.data : [];
     return { artworks: records.map(normalizeCleveland).filter((art): art is Artwork => !!art), offset: offset + size < (result.info?.total || 0) ? offset + size : undefined };
   }
+  const params = new URLSearchParams();
+  params.set("q", query.slice(0, 160));
   params.set("page", String(Math.floor(offset / size) + 1));
   params.set("limit", String(size));
   params.set("query[term][is_public_domain]", "true");
-  params.set("fields", "id,title,artist_display,artist_title,date_display,description,image_id,is_public_domain,credit_line,thumbnail");
+  params.set("fields", "id,title,artist_display,artist_title,date_display,description,image_id,is_public_domain,credit_line,thumbnail,medium_display,classification_title,style_titles,subject_titles");
   const result = await museumApi(museum, params, signal) as { data?: ChicagoRecord[]; config?: { iiif_url?: string }; pagination?: { total?: number } };
   const records = Array.isArray(result.data) ? result.data : [];
   return { artworks: records.map((record) => normalizeChicago(record, result.config?.iiif_url || "")).filter((art): art is Artwork => !!art), offset: offset + size < (result.pagination?.total || 0) ? offset + size : undefined };

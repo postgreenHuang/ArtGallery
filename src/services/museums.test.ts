@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("./storage", () => ({ desktop: false }));
-import { normalizeChicago, normalizeCleveland, safeMuseumImage } from "./museums";
+import { clevelandSearchParams, normalizeChicago, normalizeCleveland, safeMuseumImage } from "./museums";
 import { searchAcrossProviders } from "./artSearch";
 import { sizedImage } from "./commons";
 
@@ -30,6 +30,17 @@ describe("independent museum collections", () => {
     expect(safeMuseumImage("https://openaccess-cdn.clevelandart.org.evil.test/101/101_web.jpg", "cleveland")).toBe(false);
     expect(normalizeCleveland({ ...cleveland, share_license_status: "Copyrighted" })).toBeNull();
     expect(normalizeChicago({ ...chicago, is_public_domain: false }, "https://www.artic.edu/iiif/2")).toBeNull();
+  });
+
+  it("keeps print and watercolor searches out of the default Painting filter", () => {
+    expect(clevelandSearchParams("Hokusai woodcut").get("type")).toBe("Print");
+    expect(clevelandSearchParams("watercolor garden").has("type")).toBe(false);
+    expect(clevelandSearchParams("Claude Monet", 8, "Claude Monet").get("artists")).toBe("Claude Monet");
+    expect(clevelandSearchParams("Claude Monet").has("type")).toBe(false);
+    const record = normalizeChicago({ ...chicago, classification_title: "Print", style_titles: ["Impressionism"],
+      subject_titles: ["Gardens"], medium_display: "Etching on paper" }, "https://www.artic.edu/iiif/2")!;
+    expect(record.facets).toMatchObject({ objectType: { value: "Print" }, medium: { value: "Etching on paper" } });
+    expect(record.facets?.subjects?.[0].value).toBe("Gardens");
   });
 
   it("keeps both museum results when Wikimedia returns 429", async () => {

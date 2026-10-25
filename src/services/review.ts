@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Artwork, CandidateReview, Message, SearchCriteria, Settings, WebResult } from "../types";
 import { parseAiJson, curatorHistory, type Plan } from "./ai";
 import { enrichSources } from "./pageEvidence";
+import { structuredCriteria } from "../domain/intent";
+import type { CriterionAssessment } from "../domain/artwork";
 
 export interface ReviewCandidate {
   key: string;
@@ -29,6 +31,15 @@ function pageSupportsQuote(candidate: ReviewCandidate, quote: string): boolean {
   const at = page.indexOf(quoted);
   if (at < 0) return false;
   if (!candidate.key.startsWith("web:")) return true;
+  if (candidate.page.blocks?.length) {
+    const title = compact(candidate.title).toLocaleLowerCase();
+    return candidate.page.blocks.some((block) => {
+      const blockTitle = compact(block.title).toLocaleLowerCase();
+      return title.length >= 8 && blockTitle.length >= 8 &&
+        (title.includes(blockTitle) || blockTitle.includes(title)) &&
+        compact(block.text).toLocaleLowerCase().includes(quoted);
+    });
+  }
   // A web hit can be a gallery or a list of many works. Only trust a quote
   // near the particular result title, not an unrelated item elsewhere.
   const title = compact(candidate.title).toLocaleLowerCase();
@@ -69,15 +80,31 @@ export function parseReview(
       : basis === "metadata" ? quote.length >= 2 && metadata.some((value) => value.toLocaleLowerCase().includes(quote.toLocaleLowerCase())) : false;
     let verdict = item.verdict as CandidateReview["verdict"];
     let reason = compact(item.reason).slice(0, 48);
+    const expectedCriteria = structuredCriteria(criteria);
+    const rawAssessments = Array.isArray(item.assessments) ? item.assessments : [];
+    const assessments: CriterionAssessment[] = rawAssessments.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const value = entry as Record<string, unknown>;
+      const criterion = expectedCriteria.find((candidate) => candidate.id === value.criterionId);
+      if (!criterion || !["supports", "contradicts", "unknown"].includes(String(value.verdict))) return [];
+      const assessmentReason = typeof value.reason === "string" ? compact(value.reason).slice(0, 80) : "";
+      return [{ criterionId: criterion.id, verdict: value.verdict as CriterionAssessment["verdict"],
+        evidenceIds: validEvidence && value.verdict !== "unknown" ? [`${basis}:${quote || "image"}`] : [], reason: assessmentReason }];
+    });
     if (verdict !== "uncertain" && !validEvidence) { verdict = "uncertain"; reason = "缺少可核对的依据，保留待核实。"; }
     else if (verdict === "reject" && item.confidence < 0.85) { verdict = "uncertain"; reason = `排除把握不足：${reason}`; }
+    else if (verdict === "reject" && expectedCriteria.length && !assessments.some((assessment) =>
+      assessment.verdict === "contradicts" && assessment.evidenceIds.length &&
+      expectedCriteria.some((criterion) => criterion.id === assessment.criterionId && criterion.strength === "hard"))) {
+      verdict = "uncertain"; reason = "未证实违反任何明确的硬条件，保留待核实。";
+    }
     else if (verdict === "keep" && (item.confidence < 0.65 || (criteria?.requiresImage && basis !== "image"))) {
       verdict = "uncertain";
       reason = criteria?.requiresImage && basis !== "image" ? "画面条件尚未通过缩略图确认。" : `匹配把握不足：${reason}`;
     }
     output.set(candidate.key, { verdict, reason, confidence: item.confidence,
       basis: validEvidence ? basis as CandidateReview["basis"] : "unavailable", quote: validEvidence && quote ? quote : undefined,
-      imageProvided, pageRead: candidate.page?.status === "read" });
+      imageProvided, pageRead: candidate.page?.status === "read", assessments });
   }
   return output;
 }
@@ -109,10 +136,11 @@ export async function reviewCandidates(
       const call = (withImages: boolean) => {
         const images = withImages ? batch.filter((item) => item.thumbnail) : [];
         const payload = { question, query: plan.query, targetArtist: plan.targetArtist, criteria: plan.criteria,
+          structuredCriteria: structuredCriteria(plan.criteria),
           candidates: batch.map(({ thumbnail, ...item }) => item), imagesIncluded: images.map((item) => item.key) };
         return invoke<string>("ai_plan", { baseUrl: settings.baseUrl, model: settings.model, key: "",
           messages: [
-            { role: "system", content: `你是艺术检索质量复核员，逐件复核候选是否符合用户倡议，负责找出明显不符的内容。只返回 JSON：{"decisions":[{"key":"给定候选key","verdict":"keep 或 reject 或 uncertain","reason":"不超过30字的可核对理由","confidence":0.9,"basis":"metadata 或 page 或 image","quote":"使用文字依据时逐字引用一小段给定资料"}]}。
+            { role: "system", content: `你是艺术检索质量复核员，逐件复核候选是否符合用户要求，负责找出明显不符的内容。只返回 JSON：{"decisions":[{"key":"给定候选key","verdict":"keep 或 reject 或 uncertain","reason":"不超过30字的可核对理由","confidence":0.9,"basis":"metadata 或 page 或 image","quote":"使用文字依据时逐字引用一小段给定资料","assessments":[{"criterionId":"给定的结构化条件id","verdict":"supports 或 contradicts 或 unknown","reason":"简短理由"}]}]}。
 必须对每个候选返回一项，不能新增作品或改变key。required 是必需条件，excluded 是明确排除项，preferred 只用于比较偏好，不满足偏好不能直接剔除。结合对话理解用户指代；指定作者本人作品不能换成其他作者。
 只有明显矛盾、明显不是艺术作品、或明显不符硬条件时 reject；证据不足选 uncertain，不能为凑数量虚构匹配。keep/reject 都要有实际依据，文字判断引用给定 title/artist/date/description 或已读取的 page 文本；禁止引用自己的推测当证据。
 只有 imagesIncluded 中的候选提供了图，可使用 image 做画面判断；文字不能证明颜色、构图、笔触。缩略图没提供、服务无法读取图片或图片不清楚时，不得声称看过图。requiresImage=true 而尚未确认画面条件的候选应 uncertain。

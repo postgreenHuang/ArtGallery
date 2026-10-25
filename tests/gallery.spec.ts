@@ -1,4 +1,18 @@
 import { test, expect } from "@playwright/test";
+test("source extraction binds captions to their own images", async ({ page }) => {
+  await page.goto("/");
+  const blocks = await page.evaluate(async () => {
+    const { extractPageBlocks } = await import("/src/services/pageEvidence.ts");
+    return extractPageBlocks(`<main>
+      <figure><img src="/one.jpg"><figcaption><h2>Quiet River</h2> Blue landscape by Ada in the museum collection.</figcaption></figure>
+      <figure><img src="/two.jpg"><figcaption><h2>Red Portrait</h2> Portrait by Ben in the museum collection.</figcaption></figure>
+    </main>`, "https://museum.example/collection");
+  });
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]).toMatchObject({ title: "Quiet River", imageUrls: ["https://museum.example/one.jpg"] });
+  expect(blocks[0].text).not.toContain("Red Portrait");
+  expect(blocks[1].text).toContain("Portrait by Ben");
+});
 test.beforeEach(async ({ page }) => {
   await page.route("https://collectionapi.metmuseum.org/**", (route) => route.fulfill({ json: { total: 0, objectIDs: [] } }));
   await page.route("https://openaccess-api.clevelandart.org/**", (route) =>
@@ -75,31 +89,17 @@ test("fullscreen browses artworks from the same search result", async ({ page })
   await page.getByRole("button", { name: /最近看过/ }).click();
   await expect(page.locator(".gallery-grid .art-card")).toHaveCount(2);
 });
-test("discovery refresh rotates artists and similar opens a seeded inspiration chat", async ({
+test("discovery refresh changes topics and similar opens a seeded inspiration chat", async ({
   page,
 }) => {
-  const names = [
-    "Claude Monet",
-    "Paul Cezanne",
-    "Berthe Morisot",
-    "Sandro Botticelli",
-    "Albrecht Durer",
-    "Leonardo da Vinci",
-    "Rembrandt",
-    "Johannes Vermeer",
-    "Diego Velazquez",
-    "Francisco Goya",
-    "Canaletto",
-    "Katsushika Hokusai",
-    "Wassily Kandinsky",
-    "Gustav Klimt",
-    "Edvard Munch",
-  ];
+  const topicIds = new Map<string, number>();
   await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
     const query =
       new URL(route.request().url()).searchParams.get("gsrsearch") || "";
-    const name = names.find((item) => query.startsWith(item)) || "Claude Monet";
-    const id = names.indexOf(name) + 1;
+    const topic = query.split(' "Google Art Project"')[0].replace(/ filetype:bitmap$/, "");
+    if (!topicIds.has(topic)) topicIds.set(topic, topicIds.size + 1);
+    const id = topicIds.get(topic)!;
+    const name = `Artist ${id}`;
     return route.fulfill({
       json: {
         query: {
@@ -275,7 +275,7 @@ test("Chicago cards recover from a failed thumbnail and can be retried", async (
   await expect(viewerCard.locator("img")).toHaveJSProperty("naturalWidth", 1);
   await expect(viewerCard.getByRole("button", { name: "重试缩略图" })).toHaveCount(0);
 });
-test("discovery paginates and remembers viewed recommendations across refreshes", async ({ page }) => {
+test("discovery paginates and remembers shown recommendations across refreshes", async ({ page }) => {
   const seen = new Set<string>();
   const offsets: number[] = [];
   const artistIds = new Map<string, number>();
@@ -300,15 +300,16 @@ test("discovery paginates and remembers viewed recommendations across refreshes"
     } });
   });
   await page.goto("/");
-  for (let turn = 0; turn < 4; turn++) {
+  for (let turn = 0; turn < 8; turn++) {
     await expect(page.locator(".collection-section .art-card")).toHaveCount(5);
     const titles = await page.locator(".collection-section .art-caption h3").allTextContents();
     for (const title of titles) {
       expect(seen.has(title)).toBe(false);
       seen.add(title);
     }
-    if (turn < 3) {
-      await page.getByRole("button", { name: "换一组画作" }).click();
+    if (turn < 7) {
+      if (turn === 3) await page.reload();
+      else await page.getByRole("button", { name: "换一组画作" }).click();
       await expect(page.getByRole("button", { name: "换一组画作" })).toBeEnabled();
     }
   }

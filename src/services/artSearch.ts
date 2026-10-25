@@ -3,6 +3,7 @@ import { searchArt } from "./commons";
 import { searchMuseum, type Museum } from "./museums";
 import { searchMet } from "./met";
 import { searchWeb } from "./webSearch";
+import { parseAttribution } from "../domain/artwork";
 
 export type ArtProvider = "commons" | Museum | "met";
 export type ProviderOffsets = Partial<Record<ArtProvider, number>>;
@@ -13,7 +14,9 @@ const nameTokens = (value: string): string[] => value.normalize("NFKD").replace(
 export function matchesArtist(art: Artwork, constraints: SearchConstraints): boolean {
   if (!constraints.targetArtist) return true;
   // Match the author field only: descriptions and filenames can mention other artists.
-  const author = nameTokens(art.artist);
+  const attribution = art.artistAttribution || parseAttribution(art.artist, art.source);
+  if (attribution.kind !== "by") return false;
+  const author = nameTokens(attribution.name);
   return [constraints.targetArtist, ...(constraints.artistAliases || [])].some((name) => {
     const tokens = nameTokens(name);
     return tokens.length > 0 && tokens.every((token) => author.includes(token));
@@ -24,7 +27,7 @@ export function searchProvider(provider: ArtProvider, query: string, scope: Sett
   return provider === "commons"
     ? searchArt(query, scope, offset, signal)
     : provider === "met" ? searchMet(query, offset, signal, artistOnly)
-    : searchMuseum(provider, query, offset, signal);
+    : searchMuseum(provider, query, offset, signal, artistOnly ? query : undefined);
 }
 
 export async function searchAcrossProviders(
