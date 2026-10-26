@@ -552,6 +552,22 @@ mod tests {use super::*;
     #[test]fn backup_and_conflict_protection(){let mut s=fixture();save_snapshot(&mut s,data("first")).unwrap();save_snapshot(&mut s,data("second")).unwrap();assert_eq!(fs::read_to_string(s.root.join("library.backup.json")).unwrap(),data("first"));fs::write(s.root.join("library.json"),data("remote")).unwrap();assert!(save_snapshot(&mut s,data("local")).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("remote"));fs::remove_dir_all(s.root).unwrap();}
     #[test]fn migration_copies_images_and_keeps_source(){let mut s=fixture();let t=fixture();fs::remove_dir(t.root.join("images")).unwrap();save_snapshot(&mut s,data("collection")).unwrap();fs::write(s.root.join("images/1.jpg"),b"image fixture").unwrap();copy_library(&s,&t.root).unwrap();assert_eq!(fs::read(t.root.join("images/1.jpg")).unwrap(),b"image fixture");assert!(s.root.join("library.json").exists());assert!(copy_library(&s,&t.root).is_err());fs::remove_dir_all(s.root).unwrap();fs::remove_dir_all(t.root).unwrap();}
     #[test]fn malformed_data_does_not_replace_library(){let mut s=fixture();save_snapshot(&mut s,data("good")).unwrap();assert!(save_snapshot(&mut s,"{}".into()).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("good"));fs::remove_dir_all(s.root).unwrap();}
+    #[test]fn large_library_roundtrip_keeps_backup_and_every_record(){
+        let mut source=fixture();let target=fixture();fs::remove_dir(target.root.join("images")).unwrap();
+        let saved=(0..1000).map(|id|json!({"id":id,"title":format!("Artwork {id}"),"local":format!("images/{id}-original.jpg")})).collect::<Vec<_>>();
+        let conversations=(0..100).map(|id|json!({"id":format!("conversation-{id}"),"messages":[{"role":"user","content":format!("Explore {id}")}]})).collect::<Vec<_>>();
+        let first=json!({"version":1,"saved":saved,"conversations":conversations,"viewed":[]}).to_string();
+        let started=Instant::now();save_snapshot(&mut source,first.clone()).unwrap();
+        let mut second:Value=serde_json::from_str(&first).unwrap();second["viewed"]=json!([{"id":42}]);let second=second.to_string();
+        save_snapshot(&mut source,second.clone()).unwrap();copy_library(&source,&target.root).unwrap();
+        let restored:Value=serde_json::from_str(&fs::read_to_string(target.root.join("library.json")).unwrap()).unwrap();
+        assert_eq!(restored["saved"].as_array().unwrap().len(),1000);
+        assert_eq!(restored["conversations"].as_array().unwrap().len(),100);
+        assert_eq!(restored["viewed"].as_array().unwrap().len(),1);
+        assert_eq!(fs::read_to_string(target.root.join("library.backup.json")).unwrap(),first);
+        eprintln!("1000 saved + 100 conversations, two writes and migration: {:?}",started.elapsed());
+        fs::remove_dir_all(source.root).unwrap();fs::remove_dir_all(target.root).unwrap();
+    }
     #[test]fn clear_cache_preserves_collection_and_legacy_saved_images(){
         let mut s=fixture();
         save_snapshot(&mut s,json!({"version":1,"conversations":[],"saved":[{"local":"images/7-original.jpg"},{"local":"cache/high-resolution/8.jpg"}]}).to_string()).unwrap();
