@@ -2,6 +2,7 @@ import { get, del, keys, set } from "idb-keyval";
 import { invoke, convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { defaultLibrary, type Library } from "../types";
+import { recoverInterruptedReviews } from "../domain/recovery";
 export const desktop = isTauri();
 let writes = Promise.resolve();
 export async function readLibrary(): Promise<Library> {
@@ -16,7 +17,7 @@ export async function readLibrary(): Promise<Library> {
     !Array.isArray(parsed.conversations)
   )
     throw new Error("本地资料格式不兼容，请先备份资料。");
-  return {
+  return recoverInterruptedReviews({
     ...parsed,
     viewed: Array.isArray(parsed.viewed) ? parsed.viewed : [],
     discoveryExposure: parsed.discoveryExposure && Array.isArray(parsed.discoveryExposure.ids)
@@ -28,7 +29,7 @@ export async function readLibrary(): Promise<Library> {
         offsets: parsed.discoveryExposure.offsets && typeof parsed.discoveryExposure.offsets === "object" ? parsed.discoveryExposure.offsets : {} }
       : { ids: [], artistKeys: [], topics: [], offsets: {} },
     settings: { ...defaultLibrary.settings, ...parsed.settings },
-  };
+  });
 }
 export function writeLibrary(library: Library) {
   const data = JSON.stringify(library);
