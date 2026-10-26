@@ -4,6 +4,7 @@ import { parseAiJson, curatorHistory, type Plan } from "./ai";
 import { enrichSources } from "./pageEvidence";
 import { structuredCriteria } from "../domain/intent";
 import type { CriterionAssessment } from "../domain/artwork";
+import { canSendImages, isImageCompatibilityError, rememberImageUnsupported } from "./aiCapability";
 
 export interface ReviewCandidate {
   key: string;
@@ -122,14 +123,18 @@ export async function reviewCandidates(
     ...enriched.webResults.map((item, index) => ({ key: `web:${index}`, title: item.title, artist: "未核实", date: "", description: item.description,
       source: item.url, thumbnail: safeReviewThumbnail(item.thumbnail), page: item.pageEvidence })),
   ];
+  const firstBatchCandidates = candidates.slice(0, 12);
   const batches: ReviewCandidate[][] = [];
-  for (let index = 0; index < candidates.length; index += 6) batches.push(candidates.slice(index, index + 6));
+  for (let index = 0; index < firstBatchCandidates.length; index += 6) batches.push(firstBatchCandidates.slice(index, index + 6));
   const decisions = new Map<string, CandidateReview>();
   const warnings: string[] = [];
   let next = 0, done = 0;
-  let visionAvailable = true;
-  onProgress?.(`正在逐件复核候选 0/${candidates.length}…`);
-  await Promise.all(Array.from({ length: Math.min(2, batches.length) }, async () => {
+  let visionAvailable = canSendImages(settings);
+  if (!visionAvailable && firstBatchCandidates.some((item) => item.thumbnail))
+    warnings.push("此模型配置近期拒绝过图片，本轮按文字复核；画面条件保留待核实。");
+  if (candidates.length > firstBatchCandidates.length) warnings.push(`首轮仅深入复核前 ${firstBatchCandidates.length} 项；其余候选保留待核实。`);
+  onProgress?.(`正在逐件复核候选 0/${firstBatchCandidates.length}…`);
+  await Promise.all(Array.from({ length: batches.length ? 1 : 0 }, async () => {
     while (next < batches.length) {
       if (signal.aborted) throw new DOMException("已停止", "AbortError");
       const batch = batches[next++];
@@ -159,7 +164,8 @@ export async function reviewCandidates(
         try { text = await call(suppliedImages); }
         catch (error) {
           if (signal.aborted) throw error;
-          if (!suppliedImages || !batch.some((item) => item.thumbnail) || !/400|422|image|vision|图片|多模态/i.test(String(error))) throw error;
+          if (!suppliedImages || !batch.some((item) => item.thumbnail) || !isImageCompatibilityError(error)) throw error;
+          rememberImageUnsupported(settings, error);
           visionAvailable = false; suppliedImages = false;
           warnings.push("模型未接受缩略图，本轮后续复核改用文字；画面条件保留待核实。");
           text = await call(false);
@@ -173,10 +179,12 @@ export async function reviewCandidates(
         for (const item of batch) decisions.set(item.key, pending(item, "AI 复核失败，保留待核实。"));
       }
       done += batch.length;
-      onProgress?.(`正在逐件复核候选 ${done}/${candidates.length}…`);
+      onProgress?.(`正在逐件复核候选 ${done}/${firstBatchCandidates.length}…`);
     }
   }));
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
+  for (const item of candidates.slice(firstBatchCandidates.length))
+    decisions.set(item.key, pending(item, "尚未进入首轮深入复核，保留待核实。"));
   const reviewedArtworks = enriched.artworks.map((art) => ({ ...art, review: decisions.get(`art:${art.id}`) }));
   const reviewedWeb = enriched.webResults.map((item, index) => ({ ...item, review: decisions.get(`web:${index}`) }));
   return {

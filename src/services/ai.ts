@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./storage";
+import { canSendImages, isImageCompatibilityError, rememberImageUnsupported } from "./aiCapability";
 import type { ArtistSuggestion, Artwork, Message, Settings, WebResult, SearchCriteria } from "../types";
 export interface Plan {
   query: string;
@@ -204,13 +205,15 @@ export async function explainArtwork(
         },
       ],
     });
+  const withImage = !!art.thumb && canSendImages(settings);
   try {
-    const text = await call(true);
+    const text = await call(withImage);
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
-    return { text, usedImage: true };
+    return { text, usedImage: withImage };
   } catch (error) {
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
-    if (!/400|422|image|vision|图片|多模态/i.test(String(error))) throw error;
+    if (!withImage || !isImageCompatibilityError(error)) throw error;
+    rememberImageUnsupported(settings, error);
     const text = await call(false);
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
     return { text, usedImage: false };
@@ -337,11 +340,13 @@ ${includeReasons ? `本次只返回 JSON：{"text":"上述中文回答","selecti
     ],
   });
   let text: string;
-  let textOnly = false;
-  try { text = await call(images.length > 0); }
+  const withImages = images.length > 0 && canSendImages(settings);
+  let textOnly = images.length > 0 && !withImages;
+  try { text = await call(withImages); }
   catch (error) {
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
-    if (!images.length || !/400|422|image|vision|图片|多模态/i.test(String(error))) throw error;
+    if (!withImages || !isImageCompatibilityError(error)) throw error;
+    rememberImageUnsupported(settings, error);
     textOnly = true;
     text = await call(false);
   }

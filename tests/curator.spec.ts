@@ -116,6 +116,7 @@ test("search results ground the answer and follow-ups do not run another search"
   expect(await page.evaluate(() => (window as any).__curatorCalls.filter((c: any) => ["commons_query", "museum_query", "met_query", "web_image_search"].includes(c.command)).length)).toBe(searches);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages.length)).toBe(4);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].artworks[0].curatorReason)).toBe("作者与请求一致，适合继续了解其作品。");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].retrievalDiagnostics.sourceCalls)).toBe(4);
   await page.screenshot({ path: "test-results/curator-results.png", fullPage: true });
 });
 

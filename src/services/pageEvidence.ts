@@ -68,9 +68,9 @@ export async function enrichSources(artworks: Artwork[], webResults: WebResult[]
   // Museum API records already contain authoritative object metadata. Read pages
   // for sparse records and the first web clues, with a bounded total request count.
   const urls = [...new Set([
-    ...webResults.slice(0, 6).map((item) => item.url),
+    ...webResults.slice(0, 2).map((item) => item.url),
     ...artworks.filter((art) => art.description.length < 80).slice(0, 6).map((art) => art.source),
-  ])].slice(0, 12);
+  ])].slice(0, 6);
   const evidence = new Map<string, PageEvidence>();
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(3, urls.length) }, async () => {

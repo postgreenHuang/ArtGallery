@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Artwork, Message, WebResult } from "../types";
 import { defaultLibrary } from "../types";
 import { parseReview, reviewCandidates, type ReviewCandidate } from "./review";
+import { clearImageCapabilityCache } from "./aiCapability";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -20,7 +21,7 @@ const decision = (key: string, overrides: Record<string, unknown> = {}) => ({
 });
 const response = (...items: unknown[]) => JSON.stringify({ decisions: items });
 const criteria = { required: ["风景"], preferred: ["冷色"], excluded: ["肖像"], requiresImage: true };
-beforeEach(() => { invoke.mockReset(); });
+beforeEach(() => { invoke.mockReset(); clearImageCapabilityCache(); });
 
 describe("grounded per-candidate review", () => {
   it("rejects a clear contradiction in metadata and keeps an audit quote", () => {
@@ -95,5 +96,31 @@ describe("review batch recovery", () => {
     invoke.mockImplementation(async () => { controller.abort(); return response(decision("art:1")); });
     await expect(reviewCandidates("不要肖像", [], { query: "art", explanation: "search" },
       [artwork(1)], [], defaultLibrary.settings, controller.signal)).rejects.toThrow("已停止");
+  });
+  it("deeply reviews at most twelve first-round candidates and retains the rest as uncertain", async () => {
+    invoke.mockImplementation(async (...call) => {
+      const payload = JSON.parse(call[1].messages.at(-1).content);
+      return response(...payload.candidates.map((item: ReviewCandidate) => decision(item.key, { quote: item.title })));
+    });
+    const result = await reviewCandidates("不要肖像", [], { query: "art", explanation: "search" },
+      Array.from({ length: 14 }, (_, index) => artwork(index + 1)), [], defaultLibrary.settings, new AbortController().signal);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(result.rejectedArtworks).toHaveLength(12);
+    expect(result.artworks).toHaveLength(2);
+    expect(result.artworks.every((art) => art.review?.verdict === "uncertain")).toBe(true);
+    expect(result.warning).toContain("仅深入复核前 12 项");
+  });
+  it("remembers an explicit image rejection for the same model configuration", async () => {
+    invoke.mockImplementation(async (...call) => {
+      const content = call[1].messages.at(-1).content;
+      if (Array.isArray(content)) throw new Error("HTTP 400 image unsupported");
+      return response(decision("art:1", { verdict: "uncertain", reason: "文字无法确认画面" }));
+    });
+    const work = { ...artwork(1), thumb: "https://www.artic.edu/iiif/2/example/full/600,/0/default.jpg" };
+    await reviewCandidates("安静的风景", [], { query: "landscape", explanation: "search" },
+      [work], [], defaultLibrary.settings, new AbortController().signal);
+    await reviewCandidates("安静的风景", [], { query: "landscape", explanation: "search" },
+      [work], [], defaultLibrary.settings, new AbortController().signal);
+    expect(invoke.mock.calls.map((call) => Array.isArray(call[1].messages.at(-1).content))).toEqual([true, false, false]);
   });
 });

@@ -58,7 +58,8 @@ import {
 import { highResolution, searchArt } from "./services/commons";
 import { searchAcrossProviders, searchForCurator } from "./services/artSearch";
 import { reviewCandidates } from "./services/review";
-import { SEARCH_KEY_ADDRESS, searchWebPages } from "./services/webSearch";
+import { SEARCH_KEY_ADDRESS } from "./services/webSearch";
+import { runCuratorSearch } from "./services/retrieval/run";
 import { museumName } from "./services/museums";
 import { discoverArt } from "./services/discovery";
 import { buildExploreIntent } from "./domain/intent";
@@ -854,7 +855,7 @@ export default function App() {
         updateConversation(id, (c) => ({ ...c, messages: [...c.messages, { id: crypto.randomUUID(), role: "assistant", text: reply }] }));
         return;
       }
-      const present = async (result: { artworks: Artwork[]; webResults: WebResult[]; warning: string; scope: Settings["scope"]; offsets?: Message["providerOffsets"]; suggestions?: ArtistSuggestion[]; failed?: boolean; queries?: string[] }) => {
+      const present = async (result: { artworks: Artwork[]; webResults: WebResult[]; warning: string; scope: Settings["scope"]; offsets?: Message["providerOffsets"]; suggestions?: ArtistSuggestion[]; failed?: boolean; queries?: string[]; diagnostics?: Message["retrievalDiagnostics"] }) => {
         const responseId = crypto.randomUUID();
         const needsReview = library.settings.useAi && desktop && (result.artworks.length > 0 || result.webResults.length > 0);
         const previousIntent = [...history].reverse().find((item) => item.exploreIntent)?.exploreIntent;
@@ -864,6 +865,7 @@ export default function App() {
           artworks: result.artworks, webResults: result.webResults, searchWarning: result.warning,
           query: plan.query, targetArtist: plan.targetArtist, artistAliases: plan.artistAliases,
           searchCriteria: plan.criteria, exploreIntent, originalRequest: text, searchQueries: result.queries || [plan.query],
+          retrievalDiagnostics: result.diagnostics,
           reviewPending: needsReview, scope: result.scope, providerOffsets: result.offsets, suggestions: result.suggestions };
         if (controller.signal.aborted) return;
         // Save all candidates before review; the main wall waits for review to finish.
@@ -910,9 +912,11 @@ export default function App() {
       };
       if (plan.recommendations?.length) {
         setPhase("正在核对推荐画家的实际作品…");
-        const checked = await Promise.all(plan.recommendations.map(async (candidate) => ({
+        const providerPairs = [["commons", "cleveland"], ["chicago", "met"], ["commons", "chicago"]] as const;
+        const checked = await Promise.all(plan.recommendations.slice(0, 3).map(async (candidate, index) => ({
           candidate,
-          result: await searchForCurator(candidate.query, library.settings, controller.signal, { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn] }),
+          result: await searchForCurator(candidate.query, { ...library.settings, webSearch: false }, controller.signal,
+            { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn], providers: providerPairs[index], allowScopeFallback: false }),
         })));
         if (controller.signal.aborted) return;
         const artworks = checked.flatMap((item) => item.result.artworks.slice(0, 4).map((art) => ({ ...art, selectionReason: `风格推荐 ${item.candidate.nameZh}：${item.candidate.reason.slice(0, 45)}；已核对作者。` }))).filter((art, index, all) => all.findIndex((other) => other.id === art.id) === index);
@@ -924,35 +928,12 @@ export default function App() {
         return;
       }
       setPhase("正在搜索馆藏与作品来源…");
-      const queries = [...new Set([plan.query, ...(plan.alternativeQueries || [])])].slice(0, 3);
-      const attempted: string[] = [];
-      let result: Awaited<ReturnType<typeof searchForCurator>> | undefined;
-      const warnings: string[] = [];
-      let firstWebResults: WebResult[] = [];
-      for (const [index, query] of queries.entries()) {
-        attempted.push(query);
-        const searched = await searchForCurator(query, { ...library.settings, scope: chosen?.scope || library.settings.scope,
-          webSearch: index === 0 && library.settings.webSearch }, controller.signal, plan);
-        if (searched.warning) warnings.push(searched.warning);
-        if (index === 0) firstWebResults = searched.webResults;
-        result = { ...searched, webResults: index === 0 ? searched.webResults : firstWebResults.map((item) => ({ ...item, selectionReason: item.selectionReason || "网页图片线索，作者待核实。" })) };
-        plan.query = query;
-        if (searched.artworks.length || searched.failed && !firstWebResults.length) break;
-        if (index < queries.length - 1) setPhase("相关馆藏不足，正在尝试同一意图的替代关键词…");
-      }
-      if (result && !result.artworks.length && library.settings.webSearch && desktop && !result.failed) {
-        setPhase("馆藏作品不足，正在补充作者与作品的来源网页…");
-        try {
-          const pages = await searchWebPages(attempted[0], controller.signal);
-          if (controller.signal.aborted) return;
-          const seen = new Set(result.webResults.map((item) => item.url));
-          result = { ...result, webResults: [...result.webResults, ...pages.filter((item) => !seen.has(item.url)).map((item) => ({ ...item, selectionReason: item.selectionReason || "网页来源线索，待与馆藏记录核对。" }))] };
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          warnings.push(`网页来源检索暂不可用：${errorText(error)}`);
-        }
-      }
-      if (result) await present({ ...result, queries: attempted, warning: [...new Set(warnings)].join(" ") });
+      const result = await runCuratorSearch({ query: plan.query, alternativeQueries: plan.alternativeQueries,
+        settings: { ...library.settings, scope: chosen?.scope || library.settings.scope }, constraints: plan,
+        signal: controller.signal, desktop, onPhase: setPhase });
+      if (controller.signal.aborted) return;
+      plan.query = result.query;
+      await present(result);
 
     } catch (e) {
       if (!controller.signal.aborted)

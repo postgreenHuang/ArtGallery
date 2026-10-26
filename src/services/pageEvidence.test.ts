@@ -29,7 +29,7 @@ describe("source-page evidence", () => {
     invoke.mockImplementation(async () => { controller.abort(); return { url: "https://gallery.example/late", html: "<main>Late artwork page with text that must not be accepted.</main>" }; });
     await expect(readPageEvidence("https://gallery.example/late", controller.signal)).rejects.toThrow("已停止");
   });
-  it("limits source-page requests to twelve with at most three in flight", async () => {
+  it("limits source-page requests to six with at most three in flight", async () => {
     let active = 0;
     let peak = 0;
     invoke.mockImplementation(async (...call) => {
@@ -43,9 +43,9 @@ describe("source-page evidence", () => {
     const artworks = Array.from({ length: 10 }, (_, id) => ({ id, description: "", source: `https://museum.example/work/${id}` }) as Artwork);
     const webResults = Array.from({ length: 10 }, (_, index) => ({ url: `https://gallery.example/work/${index}` }) as WebResult);
     const enriched = await enrichSources(artworks, webResults, new AbortController().signal);
-    expect(invoke).toHaveBeenCalledTimes(12);
+    expect(invoke).toHaveBeenCalledTimes(6);
     expect(peak).toBeLessThanOrEqual(3);
-    expect(enriched.webResults.slice(0, 6).every((item) => item.pageEvidence?.status === "read")).toBe(true);
-    expect(enriched.webResults.slice(6).every((item) => !item.pageEvidence)).toBe(true);
+    expect(enriched.webResults.slice(0, 2).every((item) => item.pageEvidence?.status === "read")).toBe(true);
+    expect(enriched.webResults.slice(2).every((item) => !item.pageEvidence)).toBe(true);
   });
 });

@@ -75,6 +75,7 @@ export interface Message {
   pageReviewPending?: boolean;
   pendingPageArtworks?: Artwork[];
   searchQueries?: string[];
+  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; attemptedQueries: string[] };
   rejectedArtworks?: Artwork[];
   rejectedWebResults?: WebResult[];
 }

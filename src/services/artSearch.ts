@@ -9,7 +9,12 @@ export type ArtProvider = "commons" | Museum | "met";
 export type ProviderOffsets = Partial<Record<ArtProvider, number>>;
 export const providers: ArtProvider[] = ["commons", "cleveland", "chicago", "met"];
 
-export interface SearchConstraints { targetArtist?: string; artistAliases?: string[] }
+export interface SearchConstraints {
+  targetArtist?: string;
+  artistAliases?: string[];
+  providers?: readonly ArtProvider[];
+  allowScopeFallback?: boolean;
+}
 const nameTokens = (value: string): string[] => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}]+/gu) || [];
 export function matchesArtist(art: Artwork, constraints: SearchConstraints): boolean {
   if (!constraints.targetArtist) return true;
@@ -37,7 +42,8 @@ export async function searchAcrossProviders(
   offsets?: ProviderOffsets,
   constraints: SearchConstraints = {},
 ): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string }> {
-  const selected = providers.filter((provider) => !offsets || offsets[provider] !== undefined);
+  const selected = providers.filter((provider) => (!constraints.providers || constraints.providers.includes(provider)) &&
+    (!offsets || offsets[provider] !== undefined));
   const results = await Promise.allSettled(selected.map((provider) =>
     searchProvider(provider, query, scope, offsets?.[provider] || 0, signal, !!constraints.targetArtist),
   ));
@@ -75,7 +81,7 @@ export async function searchForCurator(query: string, settings: Settings, signal
   const [collection, web] = await Promise.allSettled([
     (async () => {
       let found = await searchAcrossProviders(query, settings.scope, signal, undefined, constraints);
-      if (!found.artworks.length && settings.scope === "google") {
+      if (!found.artworks.length && settings.scope === "google" && constraints.allowScopeFallback !== false) {
         const broad = await searchAcrossProviders(query, "commons", signal, undefined, constraints);
         found = { ...broad, warning: [found.warning, broad.warning, "本次已扩大到全部 Wikimedia Commons。"].filter(Boolean).join(" ") };
         return { ...found, scope: "commons" as const };

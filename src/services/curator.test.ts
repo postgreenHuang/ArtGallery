@@ -7,11 +7,12 @@ import { matchesArtist, searchAcrossProviders, searchForCurator } from "./artSea
 import { normalizeMet, searchMet } from "./met";
 import { normalizeWebPageResults, normalizeWebResults, publicHttps } from "./webSearch";
 import { defaultLibrary, type Artwork, type Message } from "../types";
+import { clearImageCapabilityCache } from "./aiCapability";
 
 const art = { id: 1, title: "Water lilies", artist: "Claude Monet", date: "1916", description: "Pond", source: "https://www.metmuseum.org/art/collection/search/1" } as Artwork;
 const history: Message[] = [{ id: "a", role: "assistant", text: "搜索完成", query: "Monet", artworks: [art, { ...art, id: 2, title: "Garden", artist: "Other Artist" }], searchWarning: "部分来源不可用" }];
 const met = { objectID: 1, isPublicDomain: true, title: "Garden", artistDisplayName: "Claude Monet", primaryImage: "https://images.metmuseum.org/CRDImages/ep/original/a.jpg", primaryImageSmall: "https://images.metmuseum.org/CRDImages/ep/web-large/a.jpg" };
-beforeEach(() => { invoke.mockReset(); });
+beforeEach(() => { invoke.mockReset(); clearImageCapabilityCache(); });
 
 describe("curator grounded conversation", () => {
   it("keeps web-page sources separate from image search and rejects unsafe or duplicate links", () => {
@@ -94,6 +95,12 @@ describe("curator grounded conversation", () => {
 });
 
 describe("artist search precision and source isolation", () => {
+  it("queries only the provider slots assigned to a bounded run", async () => {
+    invoke.mockResolvedValue({ total: 0, objectIDs: [] });
+    await searchAcrossProviders("landscape", "commons", new AbortController().signal, undefined,
+      { providers: ["met"] });
+    expect(invoke.mock.calls.map((call) => call[0])).toEqual(["met_query"]);
+  });
   it("rejects names appearing only in titles and descriptions, without accepting same surname", () => {
     const constraints = { targetArtist: "Artem Rohovyi", artistAliases: ["Artem Rogovoi"] };
     expect(matchesArtist({ ...art, title: "Artem Rohovyi", description: "Artem Rohovyi" }, constraints)).toBe(false);
