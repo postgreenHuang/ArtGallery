@@ -1,5 +1,6 @@
 import type { ArtistAttribution, ArtworkFacets, ImageAsset, CriterionAssessment } from "./domain/artwork";
 import type { ExploreIntent } from "./domain/intent";
+import type { ArtistIdentityCandidate } from "./services/entityResolver";
 
 export interface Artwork {
   id: number;
@@ -67,6 +68,7 @@ export interface Message {
   searchWarning?: string;
   error?: boolean;
   suggestions?: ArtistSuggestion[];
+  identityCandidates?: ArtistIdentityCandidate[];
   searchCriteria?: SearchCriteria;
   exploreIntent?: ExploreIntent;
   originalRequest?: string;

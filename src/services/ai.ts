@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { desktop } from "./storage";
 import { canSendImages, isImageCompatibilityError, rememberImageUnsupported } from "./aiCapability";
 import type { ArtistSuggestion, Artwork, Message, Settings, WebResult, SearchCriteria } from "../types";
+import { classifyCriterion } from "../domain/intent";
+import { resolveArtistIdentity, type ArtistIdentityCandidate } from "./entityResolver";
 export interface Plan {
   query: string;
   explanation: string;
@@ -11,6 +13,8 @@ export interface Plan {
   artistAliases?: string[];
   criteria?: SearchCriteria;
   alternativeQueries?: string[];
+  identityCandidates?: ArtistIdentityCandidate[];
+  identityWarning?: string;
 }
 export function isRecommendationRequest(input: string): boolean {
   return /类似|相似|同风格|相近风格|同派|风格.{0,12}(推荐|画家|艺术家|作品)|像.{0,18}(画家|艺术家|作品)/i.test(
@@ -100,6 +104,76 @@ export function parsePlan(text: string): Plan {
       : undefined,
   };
 }
+const criterionKey = (value: string) => value.replace(/[\s，。,.、]/g, "").toLocaleLowerCase();
+const distinctCriteria = (values: string[]) => values.filter((value, index, all) =>
+  !!criterionKey(value) && all.findIndex((other) => criterionKey(other) === criterionKey(value)) === index);
+const refinementCue = /^(?:再|继续|更|还是|仍然|这次|不要|别|排除|避免|不一定|不是一定|不必|不用|保留|但是|但|稍微)/;
+const newArtistCue = /(?:换|改成|另找|不同|其他|别的).{0,8}(?:画家|艺术家|作者)|不限作者|不限定作者/;
+const trailingSoftener = /(?:一点|一些|些|点|的)$/;
+
+export function reviseSearchPlan(input: string, plan: Plan, history: Message[]): Plan {
+  if (plan.action === "discuss" || plan.recommendations?.length || !refinementCue.test(input.trim()) || newArtistCue.test(input)) return plan;
+  const previous = [...history].reverse().find((message) => message.query && message.role === "assistant");
+  if (!previous) return plan;
+  if (plan.targetArtist && previous.targetArtist && criterionKey(plan.targetArtist) !== criterionKey(previous.targetArtist)) return plan;
+  const prior = previous.searchCriteria;
+  const incoming = plan.criteria || { required: [], preferred: [], excluded: [], requiresImage: false };
+  const merged: SearchCriteria = {
+    required: distinctCriteria([...(prior?.required || []), ...incoming.required]),
+    preferred: distinctCriteria([...(prior?.preferred || []), ...incoming.preferred]),
+    excluded: distinctCriteria([...(prior?.excluded || []), ...incoming.excluded]),
+    requiresImage: false,
+  };
+  const relaxed = input.match(/(?:不是一定要|不一定要|不必|不用非得|可以不)([^，。！？,.!?]{1,16})/)?.[1]?.trim().replace(trailingSoftener, "");
+  if (relaxed) {
+    const key = criterionKey(relaxed);
+    const downgraded = merged.required.filter((value) => criterionKey(value).includes(key) || key.includes(criterionKey(value)));
+    merged.required = merged.required.filter((value) => !downgraded.includes(value));
+    merged.preferred = distinctCriteria([...merged.preferred, ...downgraded, relaxed]);
+  }
+  const excluded = input.match(/(?:不要|别给我|排除|避免)([^，。！？,.!?]{1,16})/)?.[1]?.trim().replace(trailingSoftener, "");
+  if (excluded) {
+    merged.excluded = distinctCriteria([...merged.excluded, excluded]);
+    merged.required = merged.required.filter((value) => criterionKey(value) !== criterionKey(excluded));
+  }
+  const softer = input.match(/^更([^，。！？,.!?]{1,16})/)?.[1]?.trim().replace(trailingSoftener, "");
+  if (softer) {
+    const dimension = classifyCriterion(softer).dimension;
+    if (dimension !== "other") {
+      merged.preferred = merged.preferred.filter((value) => classifyCriterion(value).dimension !== dimension || criterionKey(value) === criterionKey(softer));
+      merged.preferred = distinctCriteria([...merged.preferred, softer]);
+    }
+  }
+  merged.requiresImage = [...merged.required, ...merged.preferred, ...merged.excluded]
+    .some((value) => classifyCriterion(value).evidenceNeeded === "visual") || !!(prior?.requiresImage || incoming.requiresImage);
+  const targetArtist = plan.targetArtist || previous.targetArtist;
+  return { ...plan, targetArtist, artistAliases: plan.artistAliases?.length ? plan.artistAliases : previous.artistAliases,
+    query: targetArtist && !plan.targetArtist ? targetArtist : plan.query,
+    alternativeQueries: targetArtist && !plan.targetArtist ? [] : plan.alternativeQueries,
+    criteria: merged };
+}
+async function withResolvedIdentity(revised: Plan, input: string, signal: AbortSignal): Promise<Plan> {
+  // Model-supplied aliases are discovery hints, not proof of author identity.
+  // Exact-author filtering only accepts names confirmed by the local table or
+  // the same unique external entity; an unavailable index keeps the raw name.
+  if (revised.targetArtist) revised.artistAliases = [];
+  const locallyKnown = dictionary.slice(0, 10).some(([, name]) => criterionKey(name) === criterionKey(revised.targetArtist || ""));
+  if (revised.action !== "discuss" && revised.targetArtist && !locallyKnown) {
+    try {
+      const identity = await resolveArtistIdentity(revised.targetArtist, input, signal);
+      if (signal.aborted) throw new DOMException("已停止", "AbortError");
+      if (identity.aliases.length) revised.artistAliases = identity.aliases;
+      if (identity.choices.length > 1) {
+        revised.identityCandidates = identity.choices;
+        revised.identityWarning = "同名艺术家身份尚未消歧；以下只按馆藏作者字段检索，不能据此认定为所想的那位。";
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+      // Entity discovery is optional; an unavailable index must not block art search.
+    }
+  }
+  return revised;
+}
 export async function planSearch(
   input: string,
   history: Message[],
@@ -107,7 +181,7 @@ export async function planSearch(
   key: string,
   signal: AbortSignal,
 ): Promise<Plan> {
-  if (!settings.useAi) return localPlan(input);
+  if (!settings.useAi) return withResolvedIdentity(reviseSearchPlan(input, localPlan(input), history), input, signal);
   if (!desktop) throw new Error("请在桌面版使用 AI；浏览器预览支持直接搜索。");
   const recommendation = isRecommendationRequest(input);
   const messages = [
@@ -115,7 +189,7 @@ export async function planSearch(
       role: "system",
       content: `你是中文艺术策展人，先决定是否需要搜索。返回且只返回 JSON：
 {"action":"search 或 discuss","query":"英文检索词；discuss 时可为空","targetArtist":"仅在找指定作者本人作品时填标准姓名，否则空字符串","artistAliases":["已知的完整姓名别名，不能含主题词或其他人"],"explanation":"简短中文计划，不要声称已经找到作品","criteria":{"required":["必须满足的具体条件"],"preferred":["软性偏好"],"excluded":["明确不要的内容"],"requiresImage":false},"alternativeQueries":["主检索失败时的替代检索词，最多2项"],"recommendations":[]}
-用户在问刚才的结果、作者、某张作品、比较、为什么搜错、表达不满，或普通艺术问题时，action=discuss，先回答，不要偷偷重搜。只有用户要求寻找、更换、更多作品或发现其他艺术家时才搜索。
+用户在问刚才的结果、作者、某张作品、比较、为什么搜错、表达不满，或普通艺术问题时，action=discuss，先回答，不要偷偷重搜。用户明确修订找画条件（如“更安静一点”“不要肖像”“不是一定要冷色”）时 action=search，继承仍有效的硬条件；其余只有用户要求寻找、更换、更多作品或发现其他艺术家时才搜索。
 如果输入只有人名，按寻找此人作品处理，targetArtist 必填；不确定姓名时保留用户原文，不要硬改成知名画家。严格作者查询的 query 只用作者姓名，不要加 painting 等泛词。明确允许相似推荐时才换作者。
 把用户倡议转为可核对的 criteria：必须条件、软性偏好、排除项分开。不要把偏好自动变成硬条件；基于画面才能判断的条件（色彩、构图、主体等）令 requiresImage=true。alternativeQueries 只做同一意图的同义词或姓名转写，不能擅自换主题或作者。
 搜索意图要结合上下文继承仍然有效的作者和主题；用户说第三张指最近展示列表的第3项，不能用无关的早期结果。
@@ -135,7 +209,7 @@ ${recommendation ? "这次措辞提示可能是风格比较，但仍须根据完
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   const plan = parsePlan(content);
   if (plan.recommendations?.length) plan.targetArtist = undefined;
-  return plan;
+  return withResolvedIdentity(reviseSearchPlan(input, plan, history), input, signal);
 }
 
 export function parseSuggestions(text: string): ArtistSuggestion[] {

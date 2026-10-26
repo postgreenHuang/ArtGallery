@@ -2,19 +2,69 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("./storage", () => ({ desktop: true }));
-import { curatorHistory, referencedImages, parsePlan, parseCuratorReply, curateResults, planSearch, replyFromResults } from "./ai";
+import { curatorHistory, referencedImages, parsePlan, parseCuratorReply, curateResults, planSearch, replyFromResults, reviseSearchPlan } from "./ai";
 import { matchesArtist, searchAcrossProviders, searchForCurator } from "./artSearch";
 import { normalizeMet, searchMet } from "./met";
 import { normalizeWebPageResults, normalizeWebResults, publicHttps } from "./webSearch";
 import { defaultLibrary, type Artwork, type Message } from "../types";
 import { clearImageCapabilityCache } from "./aiCapability";
+import { clearArtistIdentityCache } from "./entityResolver";
 
 const art = { id: 1, title: "Water lilies", artist: "Claude Monet", date: "1916", description: "Pond", source: "https://www.metmuseum.org/art/collection/search/1" } as Artwork;
 const history: Message[] = [{ id: "a", role: "assistant", text: "搜索完成", query: "Monet", artworks: [art, { ...art, id: 2, title: "Garden", artist: "Other Artist" }], searchWarning: "部分来源不可用" }];
 const met = { objectID: 1, isPublicDomain: true, title: "Garden", artistDisplayName: "Claude Monet", primaryImage: "https://images.metmuseum.org/CRDImages/ep/original/a.jpg", primaryImageSmall: "https://images.metmuseum.org/CRDImages/ep/web-large/a.jpg" };
-beforeEach(() => { invoke.mockReset(); clearImageCapabilityCache(); });
+beforeEach(() => { invoke.mockReset(); clearImageCapabilityCache(); clearArtistIdentityCache(); });
 
 describe("curator grounded conversation", () => {
+  it("keeps hard identity and topic through a soft refinement without searching an unrelated artist", () => {
+    const prior: Message[] = [{ id: "old", role: "assistant", text: "找到作品", query: "Claude Monet",
+      targetArtist: "Claude Monet", artistAliases: ["莫奈"], searchCriteria: {
+        required: ["风景"], preferred: ["热烈"], excluded: ["肖像"], requiresImage: true } }];
+    const revised = reviseSearchPlan("更安静一点", { action: "search", query: "quiet painting", explanation: "refine",
+      criteria: { required: [], preferred: ["安静"], excluded: [], requiresImage: true } }, prior);
+    expect(revised.targetArtist).toBe("Claude Monet");
+    expect(revised.query).toBe("Claude Monet");
+    expect(revised.criteria).toMatchObject({ required: ["风景"], preferred: ["安静"], excluded: ["肖像"] });
+    expect(reviseSearchPlan("找日本木刻", { query: "Japanese woodcut", explanation: "new" }, prior).targetArtist).toBeUndefined();
+  });
+  it("downgrades a relaxed color condition but keeps other hard conditions", () => {
+    const prior: Message[] = [{ id: "old", role: "assistant", text: "找到作品", query: "landscape",
+      searchCriteria: { required: ["风景", "冷色"], preferred: [], excluded: [], requiresImage: true } }];
+    const revised = reviseSearchPlan("不是一定要冷色", { action: "search", query: "landscape", explanation: "refine" }, prior);
+    expect(revised.criteria?.required).toEqual(["风景"]);
+    expect(revised.criteria?.preferred).toContain("冷色");
+    expect(reviseSearchPlan("不要肖像", { action: "search", query: "landscape", explanation: "refine" }, prior).criteria?.excluded).toContain("肖像");
+  });
+  it("applies the inherited exact author to an AI refinement before retrieval", async () => {
+    const prior: Message[] = [{ id: "old", role: "assistant", text: "找到作品", query: "Claude Monet",
+      targetArtist: "Claude Monet", searchCriteria: { required: ["风景"], preferred: [], excluded: [], requiresImage: false } }];
+    invoke.mockResolvedValueOnce(JSON.stringify({ action: "search", query: "quiet landscape", explanation: "安静一些",
+      criteria: { required: [], preferred: ["安静"], excluded: [], requiresImage: true } }));
+    const plan = await planSearch("更安静一点", prior, { ...defaultLibrary.settings, useAi: true }, "", new AbortController().signal);
+    expect(plan).toMatchObject({ query: "Claude Monet", targetArtist: "Claude Monet" });
+    expect(plan.criteria?.required).toContain("风景");
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it("surfaces a same-name identity ambiguity without silently choosing one", async () => {
+    invoke.mockResolvedValueOnce(JSON.stringify({ action: "search", query: "Alex Kim", targetArtist: "Alex Kim", explanation: "查找本人" }))
+      .mockResolvedValueOnce({ search: [
+        { id: "Q11", label: "Alex Kim", description: "American painter" },
+        { id: "Q22", label: "Alex Kim", description: "Korean artist" },
+      ] });
+    const plan = await planSearch("Alex Kim", [], { ...defaultLibrary.settings, useAi: true }, "", new AbortController().signal);
+    expect(plan.targetArtist).toBe("Alex Kim");
+    expect(plan.artistAliases).toEqual([]);
+    expect(plan.identityCandidates?.map((item) => item.id)).toEqual(["Q11", "Q22"]);
+    expect(plan.identityWarning).toContain("尚未消歧");
+  });
+  it("does not accept an unverified model alias as exact-author proof", async () => {
+    invoke.mockResolvedValueOnce(JSON.stringify({ action: "search", query: "Alex Kim", targetArtist: "Alex Kim",
+      artistAliases: ["Another Painter"], explanation: "查找作者作品" }))
+      .mockResolvedValueOnce({ search: [] });
+    const plan = await planSearch("Alex Kim", [], { ...defaultLibrary.settings, useAi: true }, "", new AbortController().signal);
+    expect(plan.artistAliases).toEqual([]);
+    expect(plan.targetArtist).toBe("Alex Kim");
+  });
   it("keeps web-page sources separate from image search and rejects unsafe or duplicate links", () => {
     const pages = normalizeWebPageResults({ web: { results: [
       { url: "https://museum.example/work", title: "<b>Artwork</b>", description: "Official collection" },

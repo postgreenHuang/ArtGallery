@@ -36,6 +36,10 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
           ] };
         }
         if (command === "web_image_search") return { results: [{ title: reviewScenario ? "Art landscapes archive" : "Artem Rohovyi artworks", url: "https://rohovyiart.com/", thumbnail: { src: "https://imgs.search.brave.com/fixture" } }] };
+        if (command === "wikidata_artist_search" && args.query === "Alex Kim") return { search: [
+          { id: "Q11", label: "Alex Kim", description: "American painter" },
+          { id: "Q22", label: "Alex Kim", description: "Korean artist" },
+        ] };
         if (command === "read_source_page") return { url: args.url, html: reviewScenario
           ? args.url.includes("artworks/3") || args.url.includes("artworks/5") ? "<title>Portrait Study</title><main>Portrait Study is a Self-Portrait by Artem Rohovyi, showing the artist's face and figure.</main>"
             : args.url.includes("rohovyiart.com") ? "<title>Art landscapes archive</title><main>Art landscapes archive contains stock photos, not original paintings by the requested artist.</main>"
@@ -45,6 +49,9 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
           const messages = args.messages;
           const last = messages.at(-1).content;
           if (messages[0].content.includes("先决定是否需要搜索")) {
+            if (last === "Alex Kim") return JSON.stringify({ action: "search", query: "Alex Kim", targetArtist: "Alex Kim", explanation: "查找作者作品" });
+            if (String(last).includes("更安静一点")) return JSON.stringify({ action: "search", query: "quiet landscape",
+              targetArtist: "", explanation: "沿用作者并偏向宁静", criteria: { required: [], preferred: ["安静"], excluded: [], requiresImage: true } });
             return JSON.stringify((last === "Artem Rohovyi" || reviewScenario && String(last).includes("Artem Rohovyi"))
               ? { action: "search", query: "Artem Rohovyi", targetArtist: "Artem Rohovyi", explanation: "查找作者作品", criteria: reviewScenario
                 ? { required: ["风景画"], preferred: ["冷色"], excluded: ["肖像"], requiresImage: true } : undefined }
@@ -118,6 +125,34 @@ test("search results ground the answer and follow-ups do not run another search"
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].artworks[0].curatorReason)).toBe("作者与请求一致，适合继续了解其作品。");
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].retrievalDiagnostics.sourceCalls)).toBe(4);
   await page.screenshot({ path: "test-results/curator-results.png", fullPage: true });
+});
+
+test("a softer follow-up keeps the previous exact artist in actual retrieval", async ({ page }) => {
+  await mockDesktop(page);
+  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("更安静一点");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => {
+    const messages = JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages;
+    return messages.filter((m: any) => m.role === "assistant" && m.query).length;
+  })).toBe(2);
+  const latest = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages.at(-1));
+  expect(latest.targetArtist).toBe("Artem Rohovyi");
+  expect(latest.searchQueries[0]).toBe("Artem Rohovyi");
+  expect(latest.searchCriteria.preferred).toContain("安静");
+  expect(latest.exploreIntent.revision).toBe(2);
+});
+
+test("same-name Wikidata clues stay unresolved and can seed a clarification", async ({ page }) => {
+  await mockDesktop(page);
+  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("Alex Kim");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  const choices = page.getByLabel("同名艺术家身份线索");
+  await expect(choices.getByRole("button")).toHaveCount(2);
+  await expect(page.locator(".search-notice").last()).toContainText("尚未消歧");
+  await choices.getByRole("button").first().click();
+  await expect(page.getByRole("textbox", { name: "向策展人描述想看的画作" })).toHaveValue(/Wikidata Q11/);
 });
 
 test("model failure after retrieval preserves artworks and web clues", async ({ page }) => {

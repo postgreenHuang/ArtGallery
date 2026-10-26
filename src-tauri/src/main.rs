@@ -179,6 +179,17 @@ async fn web_page_search(query:String,state:State<'_,AppState>)->Result<Value,St
     if !response.status().is_success(){return Err(format!("网页检索返回 HTTP {}，请检查密钥或额度",response.status()))}
     response.json().await.map_err(|_|"网页检索返回了无效响应".to_string())
 }
+#[tauri::command]
+async fn wikidata_artist_search(query:String,language:String,state:State<'_,AppState>)->Result<Value,String>{
+    if query.trim().is_empty()||query.chars().count()>120||query.contains(['\n','\r'])||!(language=="zh"||language=="en"){
+        return Err("无效的作者身份查询".into())
+    }
+    let response=state.client.get("https://www.wikidata.org/w/api.php")
+        .query(&[("action","wbsearchentities"),("format","json"),("type","item"),("limit","5"),("search",query.as_str()),("language",language.as_str())])
+        .timeout(Duration::from_secs(8)).send().await.map_err(|_|"作者身份服务暂不可用".to_string())?;
+    if !response.status().is_success(){return Err(format!("作者身份服务返回 HTTP {}",response.status()))}
+    response.json().await.map_err(|_|"作者身份服务返回了无效响应".to_string())
+}
 fn public_page_ip(ip:std::net::IpAddr)->bool {
     match ip {
         std::net::IpAddr::V4(v)=>{
@@ -424,7 +435,7 @@ fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init(
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
     app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,read_source_page,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,wikidata_artist_search,read_source_page,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
     if let Err(error)=result{if !error.to_string().contains("资料库恢复已取消"){
         rfd::MessageDialog::new().set_title("拾色启动失败").set_level(rfd::MessageLevel::Error).set_description(error.to_string()).show();
     }}

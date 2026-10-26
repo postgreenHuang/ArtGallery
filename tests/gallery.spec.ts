@@ -236,6 +236,7 @@ test("Wikimedia 429 still searches both museums and saves a museum painting", as
 test("Chicago cards recover from a failed thumbnail and can be retried", async ({ page }) => {
   const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
   let online = false;
+  const iiifCalls: string[] = [];
   await page.route("https://commons.wikimedia.org/**", (route) => route.fulfill({ status: 429, body: "limited" }));
   await page.route("https://api.artic.edu/**", (route) => route.fulfill({ json: {
     config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 3 },
@@ -247,6 +248,7 @@ test("Chicago cards recover from a failed thumbnail and can be retried", async (
   } }));
   await page.route("https://www.artic.edu/iiif/**", (route) => {
     const url = route.request().url();
+    iiifCalls.push(url);
     if (url.includes("/2d484387-") && url.includes("/843,"))
       return route.fulfill({ contentType: "image/png", body: pixel });
     if ((url.includes("/3d484387-") || url.includes("/4d484387-")) && online)
@@ -261,7 +263,8 @@ test("Chicago cards recover from a failed thumbnail and can be retried", async (
   const retry = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago retry" });
   const viewerCard = page.locator(".gallery-grid .art-card").filter({ hasText: "Chicago viewer" });
   await fallback.scrollIntoViewIfNeeded();
-  await expect(fallback.locator("img")).toHaveJSProperty("naturalWidth", 1);
+  try { await expect(fallback.locator("img")).toHaveJSProperty("naturalWidth", 1); }
+  catch (error) { throw new Error(`${String(error)}\nIIIF calls: ${iiifCalls.join(" | ")}`); }
   await expect(fallback.getByText("图片暂不可用")).toHaveCount(0);
   await expect(retry.getByRole("button", { name: "重试缩略图" })).toBeVisible();
   await expect(viewerCard.getByRole("button", { name: "重试缩略图" })).toBeVisible();

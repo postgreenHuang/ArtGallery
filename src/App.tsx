@@ -155,10 +155,10 @@ function ArtImage({
       image
         .then((url) => {
           blob = url;
-          if (alive) setSrc(url);
+          if (alive && !attempts.current.has("cache")) setSrc(url);
         })
         .catch(() => {
-          if (alive) setSrc(art.thumb);
+          if (alive && !attempts.current.has("cache")) setSrc(art.thumb);
         });
     const useViewerCache = (event: Event) => {
       if ((event as CustomEvent<number>).detail !== art.id) return;
@@ -203,6 +203,8 @@ function ArtImage({
       void cacheArtwork(art.id, url, variant).then(localImage).then((local) => {
         if (generation.current === current) {
           fallbackBlob.current = local;
+          setFailed(false);
+          onFailure?.(false);
           setSrc(local);
         }
         else if (local.startsWith("blob:")) URL.revokeObjectURL(local);
@@ -864,6 +866,7 @@ export default function App() {
         const message: Message = { id: responseId, role: "assistant", text: needsReview ? "已搜到候选，正在逐件复核资料与缩略图…" : "正在整理搜索结果…", error: result.failed,
           artworks: result.artworks, webResults: result.webResults, searchWarning: result.warning,
           query: plan.query, targetArtist: plan.targetArtist, artistAliases: plan.artistAliases,
+          identityCandidates: plan.identityCandidates,
           searchCriteria: plan.criteria, exploreIntent, originalRequest: text, searchQueries: result.queries || [plan.query],
           retrievalDiagnostics: result.diagnostics,
           reviewPending: needsReview, scope: result.scope, providerOffsets: result.offsets, suggestions: result.suggestions };
@@ -933,7 +936,7 @@ export default function App() {
         signal: controller.signal, desktop, onPhase: setPhase });
       if (controller.signal.aborted) return;
       plan.query = result.query;
-      await present(result);
+      await present({ ...result, warning: [result.warning, plan.identityWarning].filter(Boolean).join(" ") });
 
     } catch (e) {
       if (!controller.signal.aborted)
@@ -1830,6 +1833,18 @@ export default function App() {
                           <span className="suggestion-reason">
                             {candidate.reason}
                           </span>
+                          <ArrowRight size={16} />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {!!m.identityCandidates?.length && (
+                    <div className="artist-suggestions" aria-label="同名艺术家身份线索">
+                      {m.identityCandidates.map((candidate) => (
+                        <button key={`${m.id}-${candidate.id}`} disabled={busy}
+                          onClick={() => setInput(`我指的是 ${candidate.label}（${candidate.description}，Wikidata ${candidate.id}），请继续找他的作品`)}>
+                          <span><strong>{candidate.label}</strong><small>{candidate.id} · 身份线索，馆藏归属仍需核对</small></span>
+                          <span className="suggestion-reason">{candidate.description}</span>
                           <ArrowRight size={16} />
                         </button>
                       ))}
