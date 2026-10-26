@@ -46,9 +46,10 @@ export function normalizeMet(record: MetRecord | null): Artwork | null {
     width: 0, height: 0, license: "Public domain", licenseUrl: "https://www.metmuseum.org/policies/image-resources",
     attribution: `The Metropolitan Museum of Art · ${plain(record.creditLine)}` };
 }
-export async function searchMet(query: string, offset = 0, signal?: AbortSignal, artistOnly = false) {
+export async function searchMet(query: string, offset = 0, signal?: AbortSignal, artistOnly = false, medium?: string) {
   const params = new URLSearchParams({ q: query.slice(0, 160), hasImages: "true", offset: String(offset), limit: "8" });
   if (artistOnly) params.set("artistOrCulture", "true");
+  if (medium) params.set("medium", medium);
   const search = await metApi<MetSearch>(`v1.1/search?${params}`, signal);
   const ids = Array.isArray(search.objectIDs) ? search.objectIDs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(0, 8) : [];
   const results = await Promise.allSettled(ids.map(async (id: number) => normalizeMet(await metApi<MetRecord>(`v1/objects/${id}`, signal))));

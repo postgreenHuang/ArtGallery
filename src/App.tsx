@@ -996,7 +996,7 @@ export default function App() {
     request.current = controller;
     try {
       const r = message.providerOffsets
-        ? await searchAcrossProviders(message.query!, message.scope || library.settings.scope, controller.signal, message.providerOffsets, { targetArtist: message.targetArtist, artistAliases: message.artistAliases })
+        ? await searchAcrossProviders(message.query!, message.scope || library.settings.scope, controller.signal, message.providerOffsets, { targetArtist: message.targetArtist, artistAliases: message.artistAliases, criteria: message.searchCriteria })
         : await searchArt(message.query!, message.scope || library.settings.scope, message.offset, controller.signal);
       if (controller.signal.aborted) return;
       const newArtworks = r.artworks.filter((art) => ![...(message.artworks || []), ...(message.rejectedArtworks || [])].some((old) => old.id === art.id));
@@ -1877,6 +1877,9 @@ export default function App() {
                       : "查看检索计划"}</summary>
                     <p>检索词：{(m.searchQueries || [m.query]).filter(Boolean).join(" → ")}</p>
                     {m.searchCriteria && <><p>必须：{m.searchCriteria.required.join("；") || "未指定"}</p><p>偏好：{m.searchCriteria.preferred.join("；") || "未指定"}</p><p>排除：{m.searchCriteria.excluded.join("；") || "未指定"}</p></>}
+                    {m.retrievalDiagnostics?.sourceQueries?.map((plan, index) => <p key={`${plan.provider}-${index}`}>
+                      {plan.provider}：接口筛选 {plan.applied.join("、") || "无"}；留待复核 {plan.deferred.join("、") || "无"}
+                    </p>)}
                     {[...(m.artworks || []), ...(m.webResults || []), ...(m.rejectedArtworks || []), ...(m.rejectedWebResults || [])].filter((item) => item.review).map((item) => <div className={`review-audit-item ${item.review!.verdict}`} key={"id" in item ? item.id : item.url}>
                       <strong>{item.review!.verdict === "reject" ? "已排除" : item.review!.verdict === "keep" ? "相关" : "待核实"} · {item.title}</strong>
                       <p>{item.review!.reason}</p>

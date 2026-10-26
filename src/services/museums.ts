@@ -104,13 +104,16 @@ export function normalizeChicago(record: ChicagoRecord, iiifBase: string): Artwo
   };
 }
 
-export function clevelandSearchParams(query: string, offset = 0, targetArtist?: string): URLSearchParams {
+export function clevelandSearchParams(query: string, offset = 0, targetArtist?: string,
+  filters: { type?: string; technique?: string } = {}): URLSearchParams {
   const params = new URLSearchParams({ q: query.slice(0, 160), skip: String(offset), limit: "8", has_image: "1" });
   params.set("cc0", "");
   if (targetArtist) params.set("artists", targetArtist.slice(0, 120));
   // Watercolor may be catalogued as a painting or a drawing. Keep that query broad.
-  if (/\b(?:woodcut|etching|lithograph|printmaking|prints?)\b|版画|木刻|蚀刻|石版画/i.test(query)) params.set("type", "Print");
+  if (filters.type) params.set("type", filters.type);
+  else if (/\b(?:woodcut|etching|lithograph|printmaking|prints?)\b|版画|木刻|蚀刻|石版画/i.test(query)) params.set("type", "Print");
   else if (/\b(?:drawings?|sketches?)\b|素描|速写/i.test(query)) params.set("type", "Drawing");
+  if (filters.technique) params.set("technique", filters.technique);
   return params;
 }
 
@@ -130,10 +133,11 @@ async function museumApi(museum: Museum, params: URLSearchParams, signal?: Abort
   return response.json();
 }
 
-export async function searchMuseum(museum: Museum, query: string, offset = 0, signal?: AbortSignal, targetArtist?: string): Promise<{ artworks: Artwork[]; offset?: number }> {
+export async function searchMuseum(museum: Museum, query: string, offset = 0, signal?: AbortSignal, targetArtist?: string,
+  filters: { type?: string; technique?: string } = {}): Promise<{ artworks: Artwork[]; offset?: number }> {
   const size = 8;
   if (museum === "cleveland") {
-    const params = clevelandSearchParams(query, offset, targetArtist);
+    const params = clevelandSearchParams(query, offset, targetArtist, filters);
     const result = await museumApi(museum, params, signal) as { info?: { total?: number }; data?: ClevelandRecord[] };
     const records = Array.isArray(result.data) ? result.data : [];
     return { artworks: records.map(normalizeCleveland).filter((art): art is Artwork => !!art), offset: offset + size < (result.info?.total || 0) ? offset + size : undefined };

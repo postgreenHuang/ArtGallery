@@ -151,6 +151,16 @@ describe("artist search precision and source isolation", () => {
       { providers: ["met"] });
     expect(invoke.mock.calls.map((call) => call[0])).toEqual(["met_query"]);
   });
+  it("sends a required medium only to providers with a documented filter", async () => {
+    invoke.mockResolvedValue({ total: 0, objectIDs: [], info: { total: 0 }, data: [] });
+    const result = await searchAcrossProviders("garden", "commons", new AbortController().signal, undefined,
+      { providers: ["cleveland", "met"], criteria: { required: ["水彩"], preferred: [], excluded: [], requiresImage: true } });
+    const cleveland = invoke.mock.calls.find((call) => call[0] === "museum_query");
+    const met = invoke.mock.calls.find((call) => call[0] === "met_query");
+    expect(new URLSearchParams(cleveland?.[1].query).get("technique")).toBe("watercolor");
+    expect(met?.[1].path).toContain("medium=watercolor");
+    expect(result.sourceQueries.map((plan) => plan.applied)).toEqual([["水彩"], ["水彩"]]);
+  });
   it("rejects names appearing only in titles and descriptions, without accepting same surname", () => {
     const constraints = { targetArtist: "Artem Rohovyi", artistAliases: ["Artem Rogovoi"] };
     expect(matchesArtist({ ...art, title: "Artem Rohovyi", description: "Artem Rohovyi" }, constraints)).toBe(false);

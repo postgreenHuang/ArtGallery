@@ -1,6 +1,7 @@
 import type { ArtistAttribution, ArtworkFacets, ImageAsset, CriterionAssessment } from "./domain/artwork";
 import type { ExploreIntent } from "./domain/intent";
 import type { ArtistIdentityCandidate } from "./services/entityResolver";
+import type { SourceQueryPlan } from "./services/retrieval/compile";
 
 export interface Artwork {
   id: number;
@@ -77,7 +78,7 @@ export interface Message {
   pageReviewPending?: boolean;
   pendingPageArtworks?: Artwork[];
   searchQueries?: string[];
-  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; attemptedQueries: string[] };
+  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; attemptedQueries: string[]; sourceQueries?: SourceQueryPlan[] };
   rejectedArtworks?: Artwork[];
   rejectedWebResults?: WebResult[];
 }

@@ -1,12 +1,14 @@
 import type { Settings, WebResult } from "../../types";
 import { searchForCurator, type ArtProvider, type SearchConstraints } from "../artSearch";
 import { searchWebPages } from "../webSearch";
+import type { SourceQueryPlan } from "./compile";
 
 export interface RetrievalDiagnostics {
   runId: string;
   sourceCalls: number;
   sourceLimit: number;
   attemptedQueries: string[];
+  sourceQueries: SourceQueryPlan[];
 }
 
 // Provider and Brave operations share one per-run budget. A failed operation
@@ -33,6 +35,7 @@ export async function runCuratorSearch(args: {
   attemptedQueries.push(args.query);
   let result = await searchForCurator(args.query, settings, signal,
     { ...constraints, providers: firstProviders, allowScopeFallback: false });
+  const sourceQueries: SourceQueryPlan[] = [...(result.sourceQueries || [])];
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   if (result.warning) warnings.push(result.warning);
   const firstWebResults: WebResult[] = result.webResults;
@@ -49,6 +52,7 @@ export async function runCuratorSearch(args: {
       attemptedQueries.push(alternative);
       const supplemental = await searchForCurator(alternative, { ...settings, webSearch: false }, signal,
         { ...constraints, providers: permitted, allowScopeFallback: false });
+      sourceQueries.push(...(supplemental.sourceQueries || []));
       if (signal.aborted) throw new DOMException("已停止", "AbortError");
       if (supplemental.warning) warnings.push(supplemental.warning);
       result = { ...supplemental, webResults: firstWebResults.map((item) => ({ ...item,
@@ -72,7 +76,7 @@ export async function runCuratorSearch(args: {
       warnings.push(`网页来源检索暂不可用：${String(error).slice(0, 180)}`);
     }
   }
-  const diagnostics: RetrievalDiagnostics = { runId, sourceCalls, sourceLimit, attemptedQueries };
+  const diagnostics: RetrievalDiagnostics = { runId, sourceCalls, sourceLimit, attemptedQueries, sourceQueries };
   return { ...result, failed: result.failed && !result.webResults.length,
     artworks: result.artworks.slice(0, 48), query: finalQuery,
     queries: attemptedQueries, warning: [...new Set(warnings)].join(" "), diagnostics };

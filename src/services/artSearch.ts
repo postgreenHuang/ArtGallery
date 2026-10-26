@@ -1,9 +1,10 @@
-import type { Artwork, Settings } from "../types";
+import type { Artwork, SearchCriteria, Settings } from "../types";
 import { searchArt } from "./commons";
 import { searchMuseum, type Museum } from "./museums";
 import { searchMet } from "./met";
 import { searchWeb } from "./webSearch";
 import { parseAttribution } from "../domain/artwork";
+import { compileSourceQuery, type SourceQueryPlan } from "./retrieval/compile";
 
 export type ArtProvider = "commons" | Museum | "met";
 export type ProviderOffsets = Partial<Record<ArtProvider, number>>;
@@ -14,6 +15,7 @@ export interface SearchConstraints {
   artistAliases?: string[];
   providers?: readonly ArtProvider[];
   allowScopeFallback?: boolean;
+  criteria?: SearchCriteria;
 }
 const nameTokens = (value: string): string[] => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}]+/gu) || [];
 export function matchesArtist(art: Artwork, constraints: SearchConstraints): boolean {
@@ -28,11 +30,12 @@ export function matchesArtist(art: Artwork, constraints: SearchConstraints): boo
   });
 }
 
-export function searchProvider(provider: ArtProvider, query: string, scope: Settings["scope"], offset = 0, signal?: AbortSignal, artistOnly = false) {
+export function searchProvider(provider: ArtProvider, query: string, scope: Settings["scope"], offset = 0, signal?: AbortSignal, artistOnly = false,
+  plan: SourceQueryPlan = compileSourceQuery(provider), targetArtist?: string) {
   return provider === "commons"
     ? searchArt(query, scope, offset, signal)
-    : provider === "met" ? searchMet(query, offset, signal, artistOnly)
-    : searchMuseum(provider, query, offset, signal, artistOnly ? query : undefined);
+    : provider === "met" ? searchMet(query, offset, signal, artistOnly, plan.filters.medium)
+    : searchMuseum(provider, query, offset, signal, artistOnly ? targetArtist || query : undefined, plan.filters);
 }
 
 export async function searchAcrossProviders(
@@ -41,11 +44,13 @@ export async function searchAcrossProviders(
   signal: AbortSignal,
   offsets?: ProviderOffsets,
   constraints: SearchConstraints = {},
-): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string }> {
+): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string; sourceQueries: SourceQueryPlan[] }> {
   const selected = providers.filter((provider) => (!constraints.providers || constraints.providers.includes(provider)) &&
     (!offsets || offsets[provider] !== undefined));
-  const results = await Promise.allSettled(selected.map((provider) =>
-    searchProvider(provider, query, scope, offsets?.[provider] || 0, signal, !!constraints.targetArtist),
+  const sourceQueries = selected.map((provider) => compileSourceQuery(provider, constraints.criteria));
+  const results = await Promise.allSettled(selected.map((provider, index) =>
+    searchProvider(provider, query, scope, offsets?.[provider] || 0, signal, !!constraints.targetArtist,
+      sourceQueries[index], constraints.targetArtist),
   ));
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   const next: ProviderOffsets = {};
@@ -73,7 +78,7 @@ export async function searchAcrossProviders(
     selectionReason: constraints.targetArtist
       ? `作者字段匹配“${constraints.targetArtist.slice(0, 50)}”。`
       : `馆藏按“${query.slice(0, 40)}”返回的候选，相关性待核实。`,
-  })), offsets: next, warning: [errors.length ? "部分馆藏暂不可用，本次结果可能不完整。" : "", rejected ? `已排除 ${rejected} 件作者不匹配的作品。` : ""].filter(Boolean).join(" ") };
+  })), offsets: next, sourceQueries, warning: [errors.length ? "部分馆藏暂不可用，本次结果可能不完整。" : "", rejected ? `已排除 ${rejected} 件作者不匹配的作品。` : ""].filter(Boolean).join(" ") };
 }
 
 export async function searchForCurator(query: string, settings: Settings, signal: AbortSignal, constraints: SearchConstraints = {}) {
@@ -97,6 +102,7 @@ export async function searchForCurator(query: string, settings: Settings, signal
   return { artworks: collection.status === "fulfilled" ? collection.value.artworks : [],
     offsets: collection.status === "fulfilled" ? collection.value.offsets : {},
     scope: collection.status === "fulfilled" ? collection.value.scope : settings.scope,
+    sourceQueries: collection.status === "fulfilled" ? collection.value.sourceQueries : [],
     webResults: web.status === "fulfilled" ? web.value.map((item) => ({ ...item, selectionReason: `按“${query.slice(0, 40)}”搜到的网页线索，作者待核实。` })) : [], warning: warnings.join(" "),
     failed: (collection.status === "rejected" || web.status === "rejected") &&
       (collection.status !== "fulfilled" || !collection.value.artworks.length) &&
