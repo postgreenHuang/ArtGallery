@@ -127,6 +127,26 @@ test("search results ground the answer and follow-ups do not run another search"
   await page.screenshot({ path: "test-results/curator-results.png", fullPage: true });
 });
 
+test("editing intent creates a new search revision and applies source filters", async ({ page }) => {
+  await mockDesktop(page, false, true);
+  await expect(page.locator(".message-text").last()).toContainText("复核后保留");
+  await page.getByText("调整条件与检索词").click();
+  await page.getByRole("textbox", { name: "编辑检索词" }).fill("Artem Rohovyi watercolor");
+  await page.getByRole("button", { name: "移除偏好条件 冷色" }).click();
+  await page.getByRole("textbox", { name: "添加必须条件" }).fill("水彩");
+  await page.getByRole("button", { name: "添加", exact: true }).first().click();
+  await page.getByRole("button", { name: "按新条件重新找" }).click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages.length)).toBe(4);
+  const messages = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages);
+  expect(messages[1].searchCriteria.preferred).toEqual(["冷色"]);
+  expect(messages[3].searchCriteria.required).toEqual(["风景画", "水彩"]);
+  expect(messages[3].searchCriteria.preferred).toEqual([]);
+  expect(messages[3].exploreIntent.revision).toBe(2);
+  expect(messages[3].query).toBe("Artem Rohovyi watercolor");
+  expect(await page.evaluate(() => (window as any).__curatorCalls.some((call: any) => call.command === "museum_query" &&
+    call.args.provider === "cleveland" && new URLSearchParams(call.args.query).get("technique") === "watercolor"))).toBe(true);
+});
+
 test("a softer follow-up keeps the previous exact artist in actual retrieval", async ({ page }) => {
   await mockDesktop(page);
   await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();

@@ -1138,6 +1138,43 @@ main {
 .query-label span {
   margin-left: auto;
 }
+.intent-edit-button {
+  margin: 8px 0 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 12px;
+}
+.intent-editor {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.intent-editor > label:first-child { display: grid; gap: 5px; }
+.intent-editor input:not([type="checkbox"]) {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.intent-editor-row { display: grid; gap: 7px; grid-template-columns: 48px minmax(0, 1fr) minmax(120px, 180px) 44px; align-items: center; }
+.intent-editor-items { display: flex; flex-wrap: wrap; gap: 5px; }
+.intent-chip { border: 1px solid var(--border); border-radius: 99px; padding: 4px 8px; background: var(--paper); }
+.intent-editor-row > button, .intent-editor-actions button { border: 1px solid var(--border); border-radius: 4px; padding: 7px 9px; }
+.intent-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.intent-editor-actions button:last-child { background: var(--green); color: white; }
+.intent-image-check { display: flex; align-items: center; gap: 6px; }
+.intent-editor [role="alert"] { color: #a05b42; margin: 0; }
+@media (max-width: 720px) { .intent-editor-row { grid-template-columns: 45px minmax(0, 1fr) 44px; } .intent-editor-items { grid-column: 2 / 4; } }
 .load-more {
   display: flex;
   align-items: center;

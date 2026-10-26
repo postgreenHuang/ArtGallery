@@ -33,6 +33,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import FullscreenViewer from "./components/FullscreenViewer";
 import FloatingArtwork from "./components/FloatingArtwork";
+import IntentEditor from "./components/IntentEditor";
 import type {
   Artwork,
   Conversation,
@@ -42,6 +43,7 @@ import type {
   Settings,
   ArtistSuggestion,
   CandidateReview,
+  SearchCriteria,
   WebResult,
 } from "./types";
 import { defaultLibrary } from "./types";
@@ -63,6 +65,7 @@ import { runCuratorSearch } from "./services/retrieval/run";
 import { museumName } from "./services/museums";
 import { discoverArt } from "./services/discovery";
 import { buildExploreIntent } from "./domain/intent";
+import { describeIntentEdit } from "./domain/intentEdit";
 import { ViewerFullscreenController } from "./services/viewerFullscreen";
 import {
   artworkIntroductionPrompt,
@@ -355,6 +358,7 @@ export default function App() {
   );
   const [active, setActive] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [editingCriteriaId, setEditingCriteriaId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [historyKind, setHistoryKind] = useState<"inspiration" | "artwork">(
     "inspiration",
@@ -769,6 +773,7 @@ export default function App() {
     value = input,
     chosen?: { query: string; scope?: Settings["scope"] },
     similarTo?: Artwork,
+    edited?: { source: Message; query: string; criteria: SearchCriteria },
   ) {
     const text = value.trim();
     if (!text || busy || !ready) return;
@@ -820,7 +825,11 @@ export default function App() {
         messages: [...c.messages, user],
       }));
     try {
-      const plan: Plan = chosen
+      const plan: Plan = edited
+        ? { action: "search", query: edited.query, targetArtist: edited.source.targetArtist,
+            artistAliases: edited.source.artistAliases, identityCandidates: edited.source.identityCandidates,
+            criteria: edited.criteria, explanation: "按直接修订的条件重新检索。" }
+        : chosen
         ? {
             query: chosen.query,
             targetArtist: chosen.query,
@@ -835,7 +844,7 @@ export default function App() {
             controller.signal,
           );
       if (controller.signal.aborted) return;
-      if (!chosen && isRecommendationRequest(text) && !library.settings.useAi) {
+      if (!chosen && !edited && isRecommendationRequest(text) && !library.settings.useAi) {
         updateConversation(id, (c) => ({
           ...c,
           messages: [
@@ -1887,6 +1896,11 @@ export default function App() {
                       <a href={item.pageEvidence?.status === "read" ? item.pageEvidence.url : "id" in item ? item.source : item.url} target="_blank" rel="noreferrer">{item.pageEvidence?.status === "read" ? "查看证据页" : "查看来源"} <ExternalLink size={12} /></a>
                     </div>)}
                   </details>}
+                  {m.searchCriteria && m.query && <>{editingCriteriaId === m.id
+                    ? <IntentEditor key={m.id} query={m.query} criteria={m.searchCriteria} targetArtist={m.targetArtist} disabled={busy}
+                        onCancel={() => setEditingCriteriaId(null)}
+                        onApply={(query, criteria) => { setEditingCriteriaId(null); void send(describeIntentEdit(query, criteria), undefined, undefined, { source: m, query, criteria }); }} />
+                    : <button type="button" className="intent-edit-button" disabled={busy} onClick={() => setEditingCriteriaId(m.id)}>调整条件与检索词</button>}</>}
                   {m.pageReviewPending && <p className="search-notice" role="status">正在逐件复核新增候选，原有展墙仍可查看；停止后新增候选会保留为待核实。</p>}
                   {!m.reviewPending && !!m.artworks?.length && <><p className="search-notice">作品已按顺序编号，可以直接追问某一张，或比较几张作品。</p>{cards(m.artworks, false, true)}</>}
                   {!m.reviewPending && !!m.webResults?.length && <div className="web-results">
