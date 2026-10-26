@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultLibrary } from "../../types";
-import { runCuratorSearch } from "./run";
+import { runCuratorSearch, supplementAfterRejection } from "./run";
 
 const { searchForCurator, searchWebPages } = vi.hoisted(() => ({ searchForCurator: vi.fn(), searchWebPages: vi.fn() }));
 vi.mock("../artSearch", () => ({ searchForCurator }));
@@ -33,6 +33,26 @@ describe("bounded retrieval run", () => {
     expect(searchForCurator.mock.calls[1][3].providers).toEqual(["met"]);
     expect(searchForCurator.mock.calls[1][1].webSearch).toBe(false);
     expect(result.webResults.map((item) => item.url)).toEqual(["https://example.org/image", "https://example.org/page"]);
+  });
+  it("preserves first-source cursors when a supplementary source is searched", async () => {
+    searchForCurator.mockResolvedValueOnce({ ...empty(), offsets: { chicago: 8 } })
+      .mockResolvedValueOnce({ ...empty(), offsets: { met: 8 } });
+    searchWebPages.mockResolvedValueOnce([]);
+    const result = await runCuratorSearch(args());
+    expect(result.offsets).toEqual({ chicago: 8, met: 8 });
+  });
+  it("uses one untried source after all first candidates are rejected", async () => {
+    searchForCurator.mockResolvedValueOnce({ ...empty(), sourceQueries: [{ provider: "met", filters: {}, applied: [], deferred: [] }] });
+    const diagnostics = { runId: "run", sourceCalls: 4, sourceLimit: 6, attemptedQueries: ["landscape"],
+      sourceQueries: (["commons", "cleveland", "chicago"] as const).map((provider) => ({ provider, filters: {}, applied: [], deferred: [] })) };
+    const result = await supplementAfterRejection({ query: "landscape", settings: args().settings,
+      constraints: {}, diagnostics, signal: new AbortController().signal });
+    expect(searchForCurator.mock.calls[0][3].providers).toEqual(["met"]);
+    expect(searchForCurator.mock.calls[0][1].webSearch).toBe(false);
+    expect(result?.diagnostics).toMatchObject({ sourceCalls: 5, qualitySupplemented: true });
+    expect(result?.diagnostics.sourceQueries).toHaveLength(4);
+    expect(await supplementAfterRejection({ query: "landscape", settings: args().settings,
+      constraints: {}, diagnostics: result?.diagnostics, signal: new AbortController().signal })).toBeNull();
   });
   it("does not publish a late result after cancellation", async () => {
     const controller = new AbortController();

@@ -29,10 +29,7 @@ function pageSupportsQuote(candidate: ReviewCandidate, quote: string): boolean {
   if (candidate.page?.status !== "read" || quote.length < 2) return false;
   const page = compact(`${candidate.page.title} ${candidate.page.text}`).toLocaleLowerCase();
   const quoted = quote.toLocaleLowerCase();
-  const at = page.indexOf(quoted);
-  if (at < 0) return false;
-  if (!candidate.key.startsWith("web:")) return true;
-  if (candidate.page.blocks?.length) {
+  if (candidate.page.blocks?.length && (candidate.page.blocks.length > 1 || candidate.key.startsWith("web:"))) {
     const title = compact(candidate.title).toLocaleLowerCase();
     return candidate.page.blocks.some((block) => {
       const blockTitle = compact(block.title).toLocaleLowerCase();
@@ -41,6 +38,9 @@ function pageSupportsQuote(candidate: ReviewCandidate, quote: string): boolean {
         compact(block.text).toLocaleLowerCase().includes(quoted);
     });
   }
+  const at = page.indexOf(quoted);
+  if (at < 0) return false;
+  if (!candidate.key.startsWith("web:")) return true;
   // A web hit can be a gallery or a list of many works. Only trust a quote
   // near the particular result title, not an unrelated item elsewhere.
   const title = compact(candidate.title).toLocaleLowerCase();
@@ -112,10 +112,10 @@ export function parseReview(
 
 export async function reviewCandidates(
   question: string, history: Message[], plan: Plan, artworks: Artwork[], webResults: WebResult[],
-  settings: Settings, signal: AbortSignal, onProgress?: (phase: string) => void,
+  settings: Settings, signal: AbortSignal, onProgress?: (phase: string) => void, pageLimit = 6,
 ) {
   onProgress?.("正在补充可读取的来源页资料…");
-  const enriched = await enrichSources(artworks, webResults, signal);
+  const enriched = await enrichSources(artworks, webResults, signal, pageLimit);
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   const candidates: ReviewCandidate[] = [
     ...enriched.artworks.map((art) => ({ key: `art:${art.id}`, title: art.title, artist: art.artist, date: art.date,

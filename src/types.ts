@@ -2,6 +2,8 @@ import type { ArtistAttribution, ArtworkFacets, ImageAsset, CriterionAssessment 
 import type { ExploreIntent } from "./domain/intent";
 import type { ArtistIdentityCandidate } from "./services/entityResolver";
 import type { SourceQueryPlan } from "./services/retrieval/compile";
+import type { ContinuationDiagnostics } from "./services/retrieval/continue";
+import type { SourceStatus } from "./services/artSearch";
 
 export interface Artwork {
   id: number;
@@ -78,7 +80,9 @@ export interface Message {
   pageReviewPending?: boolean;
   pendingPageArtworks?: Artwork[];
   searchQueries?: string[];
-  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; attemptedQueries: string[]; sourceQueries?: SourceQueryPlan[] };
+  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; attemptedQueries: string[]; sourceQueries?: SourceQueryPlan[]; sourceStatuses?: SourceStatus[]; qualitySupplemented?: boolean };
+  continuationRotation?: number;
+  continuationRuns?: ContinuationDiagnostics[];
   rejectedArtworks?: Artwork[];
   rejectedWebResults?: WebResult[];
 }
@@ -106,6 +110,7 @@ export interface Conversation {
   messages: Message[];
   kind?: "inspiration" | "artwork";
   artwork?: Artwork;
+  parent?: { conversationId?: string; view: "discover" | "chat" | "easel" | "viewed" | "history"; messageId?: string; scrollY?: number; relation?: "composition" | "medium" };
 }
 export interface SavedArtwork {
   artwork: Artwork;
@@ -126,7 +131,7 @@ export interface Library {
   conversations: Conversation[];
   saved: SavedArtwork[];
   viewed: Artwork[];
-  discoveryExposure?: { ids: number[]; artistKeys: string[]; topics: string[]; offsets: Record<string, number> };
+  discoveryExposure?: { ids: number[]; artistKeys: string[]; cultureKeys?: string[]; typeKeys?: string[]; topics: string[]; offsets: Record<string, number> };
   settings: Settings;
 }
 export const defaultLibrary: Library = {

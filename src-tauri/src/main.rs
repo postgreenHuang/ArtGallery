@@ -213,6 +213,23 @@ fn source_page_url(raw:&str)->Result<reqwest::Url,String>{
     }
     url.set_fragment(None);Ok(url)
 }
+fn declared_charset(value:&str)->Option<String>{
+    let lower=value.to_ascii_lowercase();
+    let at=lower.find("charset")?;
+    let rest=lower[at+7..].trim_start();
+    let rest=rest.strip_prefix('=')?.trim_start().trim_start_matches(['\'', '"']);
+    let charset:String=rest.chars().take_while(|ch|ch.is_ascii_alphanumeric()||*ch=='-'||*ch=='_').collect();
+    if charset.is_empty(){None}else{Some(charset)}
+}
+fn decode_public_page(bytes:Vec<u8>,content_type:&str)->Result<String,String>{
+    let header_charset=declared_charset(content_type);
+    let prefix=String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_ascii_lowercase();
+    let meta_charset=prefix.split("<meta").skip(1).take(8).filter_map(|tag|declared_charset(tag.split('>').next().unwrap_or(""))).next();
+    if [header_charset,meta_charset].into_iter().flatten().any(|charset|charset!="utf-8"&&charset!="utf8"){
+        return Err("来源页声明了暂不支持的文字编码，已保留来源线索但不复核正文".into())
+    }
+    String::from_utf8(bytes).map_err(|_|"来源页不是有效的 UTF-8，已保留来源线索但不复核正文".into())
+}
 async fn read_public_page(raw:String)->Result<Value,String>{
     let mut url=source_page_url(&raw)?;
     for redirect in 0..=2 {
@@ -231,7 +248,7 @@ async fn read_public_page(raw:String)->Result<Value,String>{
             url=source_page_url(url.join(location).map_err(err)?.as_str())?;continue
         }
         if !response.status().is_success(){return Err(format!("来源页返回 HTTP {}",response.status()))}
-        let content_type=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value|value.to_str().ok()).unwrap_or("");
+        let content_type=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value|value.to_str().ok()).unwrap_or("").to_string();
         if !(content_type.starts_with("text/html")||content_type.starts_with("application/xhtml+xml")||content_type.starts_with("text/plain")){return Err("来源不是可读取的文字网页".into())}
         let limit=512*1024;
         let mut bytes=Vec::new();
@@ -240,7 +257,8 @@ async fn read_public_page(raw:String)->Result<Value,String>{
             bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
             if bytes.len()>=limit{break}
         }
-        return Ok(json!({"url":url.as_str(),"html":String::from_utf8_lossy(&bytes)}))
+        let html=decode_public_page(bytes,&content_type)?;
+        return Ok(json!({"url":url.as_str(),"html":html}))
     }
     Err("无法读取来源页".into())
 }
@@ -510,6 +528,12 @@ mod tests {use super::*;
         assert!(source_page_url(base.join("http://127.0.0.1/admin").unwrap().as_str()).is_err());
         assert!(source_page_url(base.join("https://user@museum.example/private").unwrap().as_str()).is_err());
     }
+    #[test]fn source_page_does_not_treat_unsupported_encodings_as_evidence(){
+        assert_eq!(decode_public_page("<main>青山</main>".as_bytes().to_vec(),"text/html; charset=UTF-8").unwrap(),"<main>青山</main>");
+        assert!(decode_public_page(b"<main>art</main>".to_vec(),"text/html; charset=Shift_JIS").unwrap_err().contains("暂不支持"));
+        assert!(decode_public_page(b"<meta charset='windows-1252'><main>art</main>".to_vec(),"text/html").unwrap_err().contains("暂不支持"));
+        assert!(decode_public_page(vec![0x3c,0x70,0x3e,0xff],"text/html").unwrap_err().contains("UTF-8"));
+    }
     #[test]fn source_page_dns_rejects_non_public_addresses(){
         for ip in ["127.0.0.1","10.1.2.3","172.16.0.1","192.168.1.1","169.254.1.1","100.64.0.1",
             "198.18.0.1","192.0.0.1","224.0.0.1","::1","fe80::1","fc00::1","2001:db8::1","2002:c000:0201::1"] {
@@ -518,7 +542,12 @@ mod tests {use super::*;
         assert!(public_page_ip("8.8.8.8".parse().unwrap()));
         assert!(public_page_ip("2001:4860:4860::8888".parse().unwrap()));
     }
-    fn fixture()->LibraryState {let root=std::env::temp_dir().join(format!("atelier-test-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));fs::create_dir_all(root.join("images")).unwrap();LibraryState{root,last:None}}
+    fn fixture()->LibraryState {
+        static NEXT_ID:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+        let unique=NEXT_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+        let root=std::env::temp_dir().join(format!("atelier-test-{}-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),unique));
+        fs::create_dir_all(root.join("images")).unwrap();LibraryState{root,last:None}
+    }
     fn data(label:&str)->String{json!({"version":1,"conversations":[],"saved":[],"label":label}).to_string()}
     #[test]fn backup_and_conflict_protection(){let mut s=fixture();save_snapshot(&mut s,data("first")).unwrap();save_snapshot(&mut s,data("second")).unwrap();assert_eq!(fs::read_to_string(s.root.join("library.backup.json")).unwrap(),data("first"));fs::write(s.root.join("library.json"),data("remote")).unwrap();assert!(save_snapshot(&mut s,data("local")).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("remote"));fs::remove_dir_all(s.root).unwrap();}
     #[test]fn migration_copies_images_and_keeps_source(){let mut s=fixture();let t=fixture();fs::remove_dir(t.root.join("images")).unwrap();save_snapshot(&mut s,data("collection")).unwrap();fs::write(s.root.join("images/1.jpg"),b"image fixture").unwrap();copy_library(&s,&t.root).unwrap();assert_eq!(fs::read(t.root.join("images/1.jpg")).unwrap(),b"image fixture");assert!(s.root.join("library.json").exists());assert!(copy_library(&s,&t.root).is_err());fs::remove_dir_all(s.root).unwrap();fs::remove_dir_all(t.root).unwrap();}

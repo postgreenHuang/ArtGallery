@@ -1,5 +1,5 @@
 import type { Settings, WebResult } from "../../types";
-import { searchForCurator, type ArtProvider, type SearchConstraints } from "../artSearch";
+import { searchForCurator, type ArtProvider, type SearchConstraints, type SourceStatus } from "../artSearch";
 import { searchWebPages } from "../webSearch";
 import type { SourceQueryPlan } from "./compile";
 
@@ -8,7 +8,29 @@ export interface RetrievalDiagnostics {
   sourceCalls: number;
   sourceLimit: number;
   attemptedQueries: string[];
-  sourceQueries: SourceQueryPlan[];
+  sourceQueries?: SourceQueryPlan[];
+  sourceStatuses?: SourceStatus[];
+  qualitySupplemented?: boolean;
+}
+
+export async function supplementAfterRejection(args: {
+  query: string;
+  settings: Settings;
+  constraints: SearchConstraints;
+  diagnostics?: RetrievalDiagnostics;
+  signal: AbortSignal;
+}) {
+  const diagnostics = args.diagnostics;
+  if (!diagnostics || diagnostics.qualitySupplemented || diagnostics.sourceCalls >= diagnostics.sourceLimit) return null;
+  const tried = new Set((diagnostics.sourceQueries || []).map((plan) => plan.provider));
+  const provider = (["met", "chicago", "cleveland", "commons"] as ArtProvider[]).find((source) => !tried.has(source));
+  if (!provider) return null;
+  const result = await searchForCurator(args.query, { ...args.settings, webSearch: false }, args.signal,
+    { ...args.constraints, providers: [provider], allowScopeFallback: false });
+  if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
+  return { ...result, diagnostics: { ...diagnostics, sourceCalls: diagnostics.sourceCalls + 1,
+    sourceQueries: [...(diagnostics.sourceQueries || []), ...(result.sourceQueries || [])],
+    sourceStatuses: [...(diagnostics.sourceStatuses || []), ...(result.sourceStatuses || [])], qualitySupplemented: true }, provider };
 }
 
 // Provider and Brave operations share one per-run budget. A failed operation
@@ -36,6 +58,7 @@ export async function runCuratorSearch(args: {
   let result = await searchForCurator(args.query, settings, signal,
     { ...constraints, providers: firstProviders, allowScopeFallback: false });
   const sourceQueries: SourceQueryPlan[] = [...(result.sourceQueries || [])];
+  const sourceStatuses: SourceStatus[] = [...(result.sourceStatuses || [])];
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   if (result.warning) warnings.push(result.warning);
   const firstWebResults: WebResult[] = result.webResults;
@@ -53,9 +76,11 @@ export async function runCuratorSearch(args: {
       const supplemental = await searchForCurator(alternative, { ...settings, webSearch: false }, signal,
         { ...constraints, providers: permitted, allowScopeFallback: false });
       sourceQueries.push(...(supplemental.sourceQueries || []));
+      sourceStatuses.push(...(supplemental.sourceStatuses || []));
       if (signal.aborted) throw new DOMException("已停止", "AbortError");
       if (supplemental.warning) warnings.push(supplemental.warning);
-      result = { ...supplemental, webResults: firstWebResults.map((item) => ({ ...item,
+      result = { ...supplemental, offsets: { ...result.offsets, ...supplemental.offsets },
+        webResults: firstWebResults.map((item) => ({ ...item,
         selectionReason: item.selectionReason || "网页图片线索，作者待核实。" })) };
       finalQuery = alternative;
     }
@@ -76,7 +101,7 @@ export async function runCuratorSearch(args: {
       warnings.push(`网页来源检索暂不可用：${String(error).slice(0, 180)}`);
     }
   }
-  const diagnostics: RetrievalDiagnostics = { runId, sourceCalls, sourceLimit, attemptedQueries, sourceQueries };
+  const diagnostics: RetrievalDiagnostics = { runId, sourceCalls, sourceLimit, attemptedQueries, sourceQueries, sourceStatuses };
   return { ...result, failed: result.failed && !result.webResults.length,
     artworks: result.artworks.slice(0, 48), query: finalQuery,
     queries: attemptedQueries, warning: [...new Set(warnings)].join(" "), diagnostics };

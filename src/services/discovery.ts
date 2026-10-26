@@ -57,11 +57,56 @@ export function chooseDiscoveryTopics(previous: string[] = [], random = Math.ran
 }
 
 const artistKey = (art: Artwork) => art.artist.trim().toLocaleLowerCase();
+const knownArtist = (art: Artwork) => !/^(?:|艺术家未标注|佚名|匿名|unknown|anonymous)$/i.test(artistKey(art));
+const facetKey = (value?: string) => value?.trim().toLocaleLowerCase() || "";
+const workKey = (art: Artwork) => knownArtist(art) && art.title.length > 5
+  ? `${artistKey(art)}:${facetKey(art.title)}` : "";
+export interface DiscoveryCoverage { newArtists: number; newCultures: number; newTypes: number; unknownCulture: number; unknownType: number }
+
+export function rankDiscoveryCandidates(candidates: Artwork[], context: {
+  selected: Artwork[]; seenIds: ReadonlySet<number>; seenArtists: ReadonlySet<string>;
+  seenCultures: ReadonlySet<string>; seenTypes: ReadonlySet<string>; previousIds: readonly number[];
+}): Artwork[] {
+  const selectedWorks = new Set(context.selected.map(workKey).filter(Boolean));
+  const selectedArtists = new Set(context.selected.filter(knownArtist).map(artistKey));
+  const selectedSources = new Set(context.selected.map((art) => art.provider || "commons"));
+  const selectedCultures = new Set(context.selected.map((art) => facetKey(art.facets?.culture?.value)).filter(Boolean));
+  const selectedTypes = new Set(context.selected.map((art) => facetKey(art.facets?.objectType?.value)).filter(Boolean));
+  return candidates.filter((art) => !context.selected.some((item) => item.id === art.id) &&
+    (!workKey(art) || !selectedWorks.has(workKey(art)))).map((art) => {
+      const culture = facetKey(art.facets?.culture?.value);
+      const type = facetKey(art.facets?.objectType?.value);
+      const artist = artistKey(art);
+      const score = (context.seenIds.has(art.id) ? 0 : 100) +
+        (context.previousIds.includes(art.id) ? 0 : 20) +
+        (knownArtist(art) && !context.seenArtists.has(artist) ? 40 : 0) +
+        (knownArtist(art) && !selectedArtists.has(artist) ? 25 : 0) +
+        (!selectedSources.has(art.provider || "commons") ? 10 : 0) +
+        (culture && !context.seenCultures.has(culture) && !selectedCultures.has(culture) ? 12 : 0) +
+        (type && !context.seenTypes.has(type) && !selectedTypes.has(type) ? 8 : 0);
+      return { art, score };
+    }).sort((a, b) => b.score - a.score || a.art.id - b.art.id).map(({ art }) => art);
+}
+
+export function discoveryCoverage(artworks: Artwork[], seenArtists: ReadonlySet<string>, seenCultures: ReadonlySet<string>, seenTypes: ReadonlySet<string>): DiscoveryCoverage {
+  const artists = new Set<string>(), cultures = new Set<string>(), types = new Set<string>();
+  let unknownCulture = 0, unknownType = 0;
+  for (const art of artworks) {
+    if (knownArtist(art) && !seenArtists.has(artistKey(art))) artists.add(artistKey(art));
+    const culture = facetKey(art.facets?.culture?.value), type = facetKey(art.facets?.objectType?.value);
+    if (culture && !seenCultures.has(culture)) cultures.add(culture);
+    if (type && !seenTypes.has(type)) types.add(type);
+    if (!culture) unknownCulture++;
+    if (!type) unknownType++;
+  }
+  return { newArtists: artists.size, newCultures: cultures.size, newTypes: types.size, unknownCulture, unknownType };
+}
 export async function discoverArt(
   scope: Settings["scope"], previousTopics: string[], previousIds: number[],
   seenIds: ReadonlySet<number>, offsets: Record<string, number>, signal: AbortSignal,
   seenArtists: ReadonlySet<string> = new Set(),
-): Promise<{ artworks: Artwork[]; artists: string[]; offsets: Record<string, number>; warning: string }> {
+  seenCultures: ReadonlySet<string> = new Set(), seenTypes: ReadonlySet<string> = new Set(),
+): Promise<{ artworks: Artwork[]; artists: string[]; offsets: Record<string, number>; warning: string; coverage: DiscoveryCoverage }> {
   const topics = chooseDiscoveryTopics(previousTopics);
   const artworks: Artwork[] = [];
   const nextOffsets = { ...offsets };
@@ -75,21 +120,25 @@ export async function discoverArt(
     let selected = false;
     for (const provider of attempts) {
       const key = `${provider}:${topic.key}`;
+      if (offsets[key] === -1) continue;
       try {
         const result = await searchProvider(provider, topic.query, scope, offsets[key] || 0, signal);
-        nextOffsets[key] = result.offset ?? 0;
-        const unique = result.artworks.filter((art) => !artworks.some((current) => current.id === art.id));
-        const novel = unique.filter((art) => !seenIds.has(art.id) && !seenArtists.has(artistKey(art)) &&
-          !artworks.some((current) => artistKey(current) === artistKey(art)));
-        const pick = novel[Math.floor(Math.random() * novel.length)];
+        // An exhausted cursor stays exhausted across refreshes; 0 would replay page one.
+        nextOffsets[key] = result.offset ?? -1;
+        const ranked = rankDiscoveryCandidates(result.artworks, { selected: artworks, seenIds, seenArtists,
+          seenCultures, seenTypes, previousIds });
+        const novel = ranked.filter((art) => !seenIds.has(art.id) &&
+          (!knownArtist(art) || !seenArtists.has(artistKey(art))) &&
+          (!knownArtist(art) || !artworks.some((current) => artistKey(current) === artistKey(art))));
+        const pick = novel[0];
         if (pick) {
           artworks.push({ ...pick, selectionReason: `从“${topic.label}”主题的馆藏结果中发现；具体关联可继续核对。` });
           selected = true;
           break;
         }
-        const lessRecent = unique.filter((art) => !previousIds.includes(art.id) &&
-          !artworks.some((current) => artistKey(current) === artistKey(art)));
-        fallback ||= lessRecent[0] || unique[0];
+        const lessRecent = ranked.filter((art) => !previousIds.includes(art.id) &&
+          (!knownArtist(art) || !artworks.some((current) => artistKey(current) === artistKey(art))));
+        fallback ||= lessRecent[0] || ranked[0];
       } catch (error) {
         if (signal.aborted) throw error;
         lastError = error;
@@ -100,5 +149,6 @@ export async function discoverArt(
   }
   if (!artworks.length && lastError) throw lastError;
   return { artworks, artists: topics.map((topic) => topic.key), offsets: nextOffsets,
+    coverage: discoveryCoverage(artworks, seenArtists, seenCultures, seenTypes),
     warning: lastError && artworks.length < topics.length ? "部分馆藏暂时不可用，本组只展示已找到的作品。" : "" };
 }

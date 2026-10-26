@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = false, slowReview = false, slowPageReview = false) {
-  await page.addInitScript(({ failSynthesis, reviewScenario, slowReview, slowPageReview }) => {
+async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = false, slowReview = false, slowPageReview = false, qualityScenario = false) {
+  await page.addInitScript(({ failSynthesis, reviewScenario, slowReview, slowPageReview, qualityScenario }) => {
     const state = window as any;
     state.isTauri = true;
     state.__curatorCalls = [];
@@ -17,7 +17,13 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
         });
         if (command === "save_library") { localStorage.setItem("fixture-library", args.data); return; }
         if (command === "commons_query") return { query: { pages: [] } };
-        if (command === "met_query") return { total: 0, objectIDs: [] };
+        if (command === "met_query") return qualityScenario
+          ? args.path.includes("/objects/")
+            ? { objectID: 901, isPublicDomain: true, title: "Met Recovery", artistDisplayName: "Artem Rohovyi",
+                primaryImage: "https://images.metmuseum.org/CRDImages/fixture/full.jpg",
+                primaryImageSmall: "https://images.metmuseum.org/CRDImages/fixture/small.jpg", medium: "Watercolor" }
+            : { total: 1, objectIDs: [901] }
+          : { total: 0, objectIDs: [] };
         if (command === "museum_query") {
           const params = new URLSearchParams(args.query);
           const q = params.get("q") || "";
@@ -62,6 +68,8 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
             const payload = JSON.parse(typeof last === "string" ? last : last[0].text);
             if (slowPageReview && payload.candidates.some((item: any) => item.title === "Second Portrait")) return new Promise(() => {});
             return JSON.stringify({ decisions: payload.candidates.map((item: any) => {
+              if (qualityScenario && item.title === "Study in Green") return { key: item.key, verdict: "reject", reason: "首批作品不符合本轮要求", confidence: 0.95, basis: "metadata", quote: "Study in Green" };
+              if (qualityScenario && item.title === "Met Recovery") return { key: item.key, verdict: "keep", reason: "馆藏作者字段匹配", confidence: 0.95, basis: "metadata", quote: "Artem Rohovyi" };
               if (reviewScenario && ["Portrait Study", "Second Portrait"].includes(item.title)) return { key: item.key, verdict: "reject", reason: "来源页注明这是自画像", confidence: 0.96, basis: "page", quote: "Self-Portrait", assessments: [{ criterionId: "excluded-0", verdict: "contradicts", reason: "自画像违反排除肖像" }] };
               if (reviewScenario && item.title === "Art landscapes archive") return { key: item.key, verdict: "reject", reason: "网页是素材照片而非画作", confidence: 0.96, basis: "page", quote: "stock photos", assessments: [{ criterionId: "required-0", verdict: "contradicts", reason: "素材照片不是风景画" }] };
               if (reviewScenario && item.title === "Untitled Study") return { key: item.key, verdict: "uncertain", reason: "画面条件无法确认", confidence: 0.5, basis: "metadata", quote: "Untitled Study" };
@@ -95,8 +103,8 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
         return null;
       },
     };
-  }, { failSynthesis, reviewScenario, slowReview, slowPageReview });
-  await page.route(/https:\/\/(www\.artic\.edu|imgs\.search\.brave\.com)\//, (route) => route.fulfill({
+  }, { failSynthesis, reviewScenario, slowReview, slowPageReview, qualityScenario });
+  await page.route(/https:\/\/(www\.artic\.edu|imgs\.search\.brave\.com|images\.metmuseum\.org)\//, (route) => route.fulfill({
     contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
   }));
   await page.goto("/");
@@ -145,6 +153,21 @@ test("editing intent creates a new search revision and applies source filters", 
   expect(messages[3].query).toBe("Artem Rohovyi watercolor");
   expect(await page.evaluate(() => (window as any).__curatorCalls.some((call: any) => call.command === "museum_query" &&
     call.args.provider === "cleveland" && new URLSearchParams(call.args.query).get("technique") === "watercolor"))).toBe(true);
+});
+
+test("rejected first candidates trigger one budgeted museum supplement", async ({ page }) => {
+  await mockDesktop(page, false, false, false, false, true);
+  await expect(page.getByRole("button", { name: "欣赏 Met Recovery" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toHaveCount(0);
+  const result = await page.evaluate(() => {
+    const state = window as any;
+    const message = JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1];
+    return { calls: state.__curatorCalls, message };
+  });
+  expect(result.message.retrievalDiagnostics).toMatchObject({ sourceCalls: 5, sourceLimit: 6, qualitySupplemented: true });
+  expect(result.message.rejectedArtworks.map((art: any) => art.title)).toContain("Study in Green");
+  expect(result.calls.filter((call: any) => call.command === "met_query" && call.args.path.includes("v1.1/search?q=Artem+Rohovyi"))).toHaveLength(1);
+  expect(result.calls.filter((call: any) => call.command === "read_source_page" && String(call.args.url).includes("metmuseum"))).toHaveLength(0);
 });
 
 test("a softer follow-up keeps the previous exact artist in actual retrieval", async ({ page }) => {

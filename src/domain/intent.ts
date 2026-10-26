@@ -16,10 +16,34 @@ export interface ExploreIntent {
   revision: number;
   mode: SearchMode;
   originalRequest: string;
+  query?: string;
   targetArtist?: string;
   criteria: Criterion[];
+  changes?: IntentChanges;
   anchorWorkKeys: string[];
   relation?: "composition" | "color" | "subject" | "medium" | "history" | "contrast";
+}
+export interface IntentChanges {
+  added: string[];
+  removed: string[];
+  moved: { value: string; from: string; to: string }[];
+  queryChanged: boolean;
+  artistChanged: boolean;
+}
+
+const criterionGroup = (criterion: Criterion): string => criterion.operator === "exclude" ? "排除" : criterion.strength === "hard" ? "必须" : "偏好";
+export function diffExploreIntent(previous: ExploreIntent, criteria: Criterion[], query?: string, targetArtist?: string): IntentChanges {
+  const before = new Map(previous.criteria.map((item) => [item.value.trim().toLocaleLowerCase(), item]));
+  const after = new Map(criteria.map((item) => [item.value.trim().toLocaleLowerCase(), item]));
+  const added: string[] = [], removed: string[] = [], moved: IntentChanges["moved"] = [];
+  for (const [key, item] of after) {
+    const old = before.get(key);
+    if (!old) added.push(`${criterionGroup(item)}：${item.value}`);
+    else if (criterionGroup(old) !== criterionGroup(item)) moved.push({ value: item.value, from: criterionGroup(old), to: criterionGroup(item) });
+  }
+  for (const [key, item] of before) if (!after.has(key)) removed.push(`${criterionGroup(item)}：${item.value}`);
+  return { added, removed, moved, queryChanged: previous.query !== undefined && previous.query !== query,
+    artistChanged: previous.targetArtist !== targetArtist };
 }
 
 export function classifyCriterion(value: string): Pick<Criterion, "dimension" | "evidenceNeeded"> {
@@ -58,14 +82,17 @@ export function structuredCriteria(criteria?: SearchCriteria): Criterion[] {
 
 export function buildExploreIntent(args: {
   request: string;
+  query?: string;
   targetArtist?: string;
   criteria?: SearchCriteria;
   previous?: ExploreIntent;
   anchorWorkKeys?: string[];
   relation?: ExploreIntent["relation"];
 }): ExploreIntent {
-  const { request, targetArtist, criteria, previous, anchorWorkKeys = [], relation } = args;
+  const { request, query, targetArtist, criteria, previous, anchorWorkKeys = [], relation } = args;
+  const structured = structuredCriteria(criteria);
   return { id: previous?.id || crypto.randomUUID(), revision: (previous?.revision || 0) + 1,
     mode: targetArtist ? "exact" : anchorWorkKeys.length || relation ? "explore" : "thematic",
-    originalRequest: request, targetArtist, criteria: structuredCriteria(criteria), anchorWorkKeys, relation };
+    originalRequest: request, query, targetArtist, criteria: structured,
+    changes: previous ? diffExploreIntent(previous, structured, query, targetArtist) : undefined, anchorWorkKeys, relation };
 }

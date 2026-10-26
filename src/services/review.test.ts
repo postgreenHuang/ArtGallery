@@ -59,6 +59,8 @@ describe("grounded per-candidate review", () => {
       ],
     } };
     expect(parseReview(response(decision("web:0", { basis: "page", quote: "depicts a person" })), [web], new Set()).get("web:0")?.verdict).toBe("uncertain");
+    const museum = { ...web, key: "art:1" };
+    expect(parseReview(response(decision("art:1", { basis: "page", quote: "depicts a person" })), [museum], new Set()).get("art:1")?.verdict).toBe("uncertain");
   });
   it("does not confirm image-dependent matches from text alone", () => {
     const result = parseReview(response(decision("art:1", { verdict: "keep" })), [candidate()], new Set(), criteria);

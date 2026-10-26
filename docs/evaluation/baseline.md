@@ -4,7 +4,7 @@
 
 ## 可重复任务
 
-`tasks.json` 收录 24 条用户原话，四组各 6 条。任务中的 `checks` 是人工审核清单，不是作品的真实标签。扩展至 48 条时仍需逐条核对真实作品和来源。
+`tasks.json` 收录 48 条任务，身份、主题、发散、连续性四组各 12 条。后 24 条为评测情境扩展，不冒充用户逐字原话。任务中的 `checks` 是人工审核清单，不是作品的真实标签；仍需逐条核对真实作品和来源。
 
 运行 `node scripts/evaluate-curator.mjs` 只检查任务集，不输出虚假的选图质量分数。可选择传入一份人工收集的 JSON 运行记录，例如 `node scripts/evaluate-curator.mjs docs/evaluation/tasks.json path/to/captures.json`，记录形如：
 
@@ -12,14 +12,22 @@
 [{"taskId":"identity-01","retrieved":["commons:123"],"reviewed":["commons:123"],"displayed":["commons:123"]}]
 ```
 
-三个数组分别是原始候选、复核保留和用户看见的记录键。该脚本只统计阶段数量；真实相关性、错误剔除、曝光多样性需要同一组对象的人工标签，不能用数量推断。
+三个数组分别是原始候选、复核保留和用户看见的记录键。若实际运行记录另有 `rejected` 和 `manualLabels`，脚本只在明确标注的对象上统计相关、错排和作者错归属，例如：
+
+```json
+[{"taskId":"identity-01","retrieved":["commons:123"],"reviewed":["commons:123"],"displayed":["commons:123"],"rejected":[],"manualLabels":{"commons:123":{"relevant":true,"attributionCorrect":true}}}]
+```
+
+该示例仅说明格式，不是一次真实运行。缺少人工标签时脚本只统计阶段数量；标注不完整时分母只包括已判定项，不推断整组质量或召回率。
 
 ## 已有代码可确认的失败机制
 
-1. 首页由固定 15 位画家轮换，长期覆盖受限：`src/services/discovery.ts`。
-2. 多馆藏共用同一串查询词，现有馆藏的题材、媒材和年代字段未充分使用：`src/services/artSearch.ts` 与各馆藏适配器。
-3. 当前网页依据主要从全文抽取，作品级归属无法仅凭引用存在和文字距离保证：`src/services/pageEvidence.ts`、`src/services/review.ts`。
-4. 作者匹配缺少 `after`、`workshop` 等归属限定语判断：`src/services/artSearch.ts`。
+以下是基线版本的失败机制，部分已在后续切片修复，不能当作当前版本仍存在的断言：
+
+1. 首页曾由固定 15 位画家轮换；现已改为主题轮换与曝光记忆，但真实覆盖仍待测：`src/services/discovery.ts`。
+2. 多馆藏曾共用单一关键词；现已对部分来源下推类型/媒材条件，其余维度仍待扩充：`src/services/artSearch.ts` 与各馆藏适配器。
+3. 网页依据曾主要从全文抽取；现增加作品块、JSON-LD 与同作品引用边界，但真实网页误关联率仍待测：`src/services/pageEvidence.ts`、`src/services/review.ts`。
+4. 作者匹配曾缺少 `after`、`workshop` 等归属限定语；现有保守过滤，真实反例仍需回放：`src/services/artSearch.ts`。
 
 这些是由实现推得的风险，不等于已经测得的用户错误率。
 

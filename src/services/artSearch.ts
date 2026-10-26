@@ -8,6 +8,13 @@ import { compileSourceQuery, type SourceQueryPlan } from "./retrieval/compile";
 
 export type ArtProvider = "commons" | Museum | "met";
 export type ProviderOffsets = Partial<Record<ArtProvider, number>>;
+export interface SourceStatus {
+  provider: ArtProvider;
+  state: "ok" | "empty" | "filtered" | "limited" | "error";
+  candidateCount: number;
+  matchedCount: number;
+  detail?: string;
+}
 export const providers: ArtProvider[] = ["commons", "cleveland", "chicago", "met"];
 
 export interface SearchConstraints {
@@ -44,7 +51,7 @@ export async function searchAcrossProviders(
   signal: AbortSignal,
   offsets?: ProviderOffsets,
   constraints: SearchConstraints = {},
-): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string; sourceQueries: SourceQueryPlan[] }> {
+): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string; sourceQueries: SourceQueryPlan[]; sourceStatuses: SourceStatus[] }> {
   const selected = providers.filter((provider) => (!constraints.providers || constraints.providers.includes(provider)) &&
     (!offsets || offsets[provider] !== undefined));
   const sourceQueries = selected.map((provider) => compileSourceQuery(provider, constraints.criteria));
@@ -56,14 +63,22 @@ export async function searchAcrossProviders(
   const next: ProviderOffsets = {};
   const groups: Artwork[][] = [];
   const errors: string[] = [];
+  const sourceStatuses: SourceStatus[] = [];
   results.forEach((result, index) => {
     const provider = selected[index];
     if (result.status === "fulfilled") {
       groups.push(result.value.artworks);
+      const candidateCount = result.value.artworks.length;
+      const matchedCount = result.value.artworks.filter((art) => matchesArtist(art, constraints)).length;
+      sourceStatuses.push({ provider, candidateCount, matchedCount,
+        state: !candidateCount ? "empty" : !matchedCount ? "filtered" : "ok" });
       if (result.value.offset !== undefined) next[provider] = result.value.offset;
     } else {
       groups.push([]);
-      errors.push(`${provider}: ${String(result.reason)}`);
+      const detail = String(result.reason).slice(0, 180);
+      errors.push(`${provider}: ${detail}`);
+      sourceStatuses.push({ provider, candidateCount: 0, matchedCount: 0,
+        state: /429|限流|rate.limit/i.test(detail) ? "limited" : "error", detail });
       // Keep the cursor so a temporarily limited source can be retried later.
       if (offsets?.[provider] !== undefined) next[provider] = offsets[provider];
     }
@@ -71,14 +86,15 @@ export async function searchAcrossProviders(
   const artworks: Artwork[] = [];
   for (let index = 0; groups.some((group) => index < group.length); index++)
     for (const group of groups) if (group[index]) artworks.push(group[index]);
-  if (!artworks.length && errors.length) throw new Error(`开放馆藏暂时不可用：${errors.join("；")}`);
   const matched = artworks.filter((art) => matchesArtist(art, constraints));
   const rejected = artworks.length - matched.length;
   return { artworks: matched.map((art) => ({ ...art,
     selectionReason: constraints.targetArtist
       ? `作者字段匹配“${constraints.targetArtist.slice(0, 50)}”。`
       : `馆藏按“${query.slice(0, 40)}”返回的候选，相关性待核实。`,
-  })), offsets: next, sourceQueries, warning: [errors.length ? "部分馆藏暂不可用，本次结果可能不完整。" : "", rejected ? `已排除 ${rejected} 件作者不匹配的作品。` : ""].filter(Boolean).join(" ") };
+  })), offsets: next, sourceQueries, sourceStatuses,
+    warning: [errors.length === selected.length && errors.length ? "馆藏搜索失败：已尝试的馆藏均暂不可用。" : errors.length ? "部分馆藏暂不可用，本次结果可能不完整。" : "",
+      rejected ? `已排除 ${rejected} 件作者不匹配的作品。` : ""].filter(Boolean).join(" ") };
 }
 
 export async function searchForCurator(query: string, settings: Settings, signal: AbortSignal, constraints: SearchConstraints = {}) {
@@ -86,9 +102,13 @@ export async function searchForCurator(query: string, settings: Settings, signal
   const [collection, web] = await Promise.allSettled([
     (async () => {
       let found = await searchAcrossProviders(query, settings.scope, signal, undefined, constraints);
-      if (!found.artworks.length && settings.scope === "google" && constraints.allowScopeFallback !== false) {
-        const broad = await searchAcrossProviders(query, "commons", signal, undefined, constraints);
-        found = { ...broad, warning: [found.warning, broad.warning, "本次已扩大到全部 Wikimedia Commons。"].filter(Boolean).join(" ") };
+      if (!found.artworks.length && settings.scope === "google" && constraints.allowScopeFallback !== false &&
+        (!constraints.providers || constraints.providers.includes("commons"))) {
+        const broad = await searchAcrossProviders(query, "commons", signal, undefined,
+          { ...constraints, providers: ["commons"], allowScopeFallback: false });
+        found = { ...broad, sourceQueries: [...found.sourceQueries, ...broad.sourceQueries],
+          sourceStatuses: [...found.sourceStatuses, ...broad.sourceStatuses],
+          warning: [found.warning, broad.warning, "本次已扩大到全部 Wikimedia Commons。"].filter(Boolean).join(" ") };
         return { ...found, scope: "commons" as const };
       }
       return { ...found, scope: settings.scope };
@@ -99,12 +119,15 @@ export async function searchForCurator(query: string, settings: Settings, signal
   if (collection.status === "rejected") warnings.push(`馆藏搜索失败：${String(collection.reason)}`);
   else if (collection.value.warning) warnings.push(collection.value.warning);
   if (web.status === "rejected") warnings.push(`全网搜图失败：${String(web.reason)}`);
+  const collectionFailed = collection.status === "rejected" || (!collection.value.artworks.length &&
+    collection.value.sourceStatuses.some((status) => status.state === "limited" || status.state === "error"));
   return { artworks: collection.status === "fulfilled" ? collection.value.artworks : [],
     offsets: collection.status === "fulfilled" ? collection.value.offsets : {},
     scope: collection.status === "fulfilled" ? collection.value.scope : settings.scope,
     sourceQueries: collection.status === "fulfilled" ? collection.value.sourceQueries : [],
+    sourceStatuses: collection.status === "fulfilled" ? collection.value.sourceStatuses : [],
     webResults: web.status === "fulfilled" ? web.value.map((item) => ({ ...item, selectionReason: `按“${query.slice(0, 40)}”搜到的网页线索，作者待核实。` })) : [], warning: warnings.join(" "),
-    failed: (collection.status === "rejected" || web.status === "rejected") &&
+    failed: (collectionFailed || web.status === "rejected") &&
       (collection.status !== "fulfilled" || !collection.value.artworks.length) &&
       (web.status !== "fulfilled" || !web.value.length),
   };

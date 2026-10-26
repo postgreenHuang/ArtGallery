@@ -13,6 +13,22 @@ test("source extraction binds captions to their own images", async ({ page }) =>
   expect(blocks[0].text).not.toContain("Red Portrait");
   expect(blocks[1].text).toContain("Portrait by Ben");
 });
+test("JSON-LD artwork records stay separate without executing page scripts", async ({ page }) => {
+  await page.goto("/");
+  const blocks = await page.evaluate(async () => {
+    const { extractPageBlocks } = await import("/src/services/pageEvidence.ts");
+    return extractPageBlocks(`<script type="application/ld+json">{"@graph":[
+      {"@type":"VisualArtwork","name":"Quiet River","creator":{"name":"Ada"},"description":"Blue river landscape by Ada in 1910.","image":"/quiet.jpg"},
+      {"@type":"VisualArtwork","name":"Red Portrait","creator":{"name":"Ben"},"description":"Portrait of a person by Ben in 1912.","image":"/portrait.jpg"}
+    ]}</script><main>Quiet River and Red Portrait are both shown here. Red Portrait depicts a person.</main>
+    <script>window.__untrustedExecuted = true</script>`, "https://gallery.example/works");
+  });
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]).toMatchObject({ title: "Quiet River", imageUrls: ["https://gallery.example/quiet.jpg"] });
+  expect(blocks[0].text).not.toContain("Portrait of a person");
+  expect(blocks[1].text).toContain("Ben");
+  expect(await page.evaluate(() => (window as any).__untrustedExecuted)).toBeUndefined();
+});
 test.beforeEach(async ({ page }) => {
   await page.route("https://collectionapi.metmuseum.org/**", (route) => route.fulfill({ json: { total: 0, objectIDs: [] } }));
   await page.route("https://openaccess-api.clevelandart.org/**", (route) =>
@@ -158,6 +174,36 @@ test("discovery refresh changes topics and similar opens a seeded inspiration ch
   await expect(
     page.getByText("请在偏好中开启 AI", { exact: false }),
   ).toBeVisible();
+});
+test("two artwork exploration branches keep distinct plans and return to the original wall", async ({ page }) => {
+  const ids = new Map<string, number>();
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => {
+    const query = new URL(route.request().url()).searchParams.get("gsrsearch") || "";
+    if (!ids.has(query)) ids.set(query, ids.size + 1);
+    const id = ids.get(query)!;
+    return route.fulfill({ json: { query: { pages: [{ ...fixture, pageid: id, title: `File:Work ${id}.jpg`,
+      imageinfo: [{ ...fixture.imageinfo[0], extmetadata: { ...fixture.imageinfo[0].extmetadata,
+        ObjectName: { value: `Work ${id}` }, Artist: { value: `Artist ${id}` } } }] }] } } });
+  });
+  await page.goto("/");
+  await expect(page.locator(".collection-section .art-card")).toHaveCount(5);
+  const titles = await page.locator(".collection-section .art-caption h3").allTextContents();
+  const explore = async (name: string) => {
+    await page.locator(".collection-section .art-card").first().getByRole("button", { name: /欣赏/ }).click({ button: "right" });
+    await page.getByRole("button", { name }).click();
+    await expect(page.getByRole("button", { name: "← 返回原展墙" })).toBeVisible();
+    await expect(page.locator(".query-label").last()).toBeVisible();
+    const query = await page.locator(".query-label").last().textContent();
+    await page.getByRole("button", { name: "← 返回原展墙" }).click();
+    await expect(page.locator(".collection-section .art-card")).toHaveCount(5);
+    expect(await page.locator(".collection-section .art-caption h3").allTextContents()).toEqual(titles);
+    return query;
+  };
+  const composition = await explore("按构图继续找");
+  const medium = await explore("同题材换媒材");
+  expect(composition).toContain("composition");
+  expect(medium).toContain("print");
+  expect(composition).not.toBe(medium);
 });
 test("original download rate limit explains retry while thumbnails stay visible", async ({
   page,

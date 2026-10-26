@@ -1,0 +1,4 @@
+[
+  {"taskId":"identity-01","retrieved":["commons:a","commons:b"],"reviewed":["commons:a"],"displayed":["commons:a"],"rejected":["commons:b"],"manualLabels":{"commons:a":{"relevant":true,"attributionCorrect":true},"commons:b":{"relevant":false}}},
+  {"taskId":"theme-01","retrieved":["met:c","met:d"],"reviewed":["met:c","met:d"],"displayed":["met:c","met:d"],"manualLabels":{"met:c":{"relevant":true,"attributionCorrect":false}}}
+]

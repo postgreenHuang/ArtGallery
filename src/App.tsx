@@ -57,15 +57,17 @@ import {
   writeLibrary,
 } from "./services/storage";
 
-import { highResolution, searchArt } from "./services/commons";
-import { searchAcrossProviders, searchForCurator } from "./services/artSearch";
+import { highResolution } from "./services/commons";
+import { searchForCurator } from "./services/artSearch";
 import { reviewCandidates } from "./services/review";
 import { SEARCH_KEY_ADDRESS } from "./services/webSearch";
-import { runCuratorSearch } from "./services/retrieval/run";
+import { runCuratorSearch, supplementAfterRejection } from "./services/retrieval/run";
+import { runContinuationSearch } from "./services/retrieval/continue";
 import { museumName } from "./services/museums";
-import { discoverArt } from "./services/discovery";
+import { discoverArt, type DiscoveryCoverage } from "./services/discovery";
 import { buildExploreIntent } from "./domain/intent";
 import { describeIntentEdit } from "./domain/intentEdit";
+import { planArtworkBranch, type BranchPlan } from "./domain/exploreBranch";
 import { ViewerFullscreenController } from "./services/viewerFullscreen";
 import {
   artworkIntroductionPrompt,
@@ -366,10 +368,13 @@ export default function App() {
   const [discover, setDiscover] = useState<Artwork[]>([]);
   const [discoverLoading, setDiscoverLoading] = useState(true);
   const [discoverError, setDiscoverError] = useState("");
+  const [discoverCoverage, setDiscoverCoverage] = useState<DiscoveryCoverage | null>(null);
   const discoverRequest = useRef<AbortController | null>(null);
   const discoverArtists = useRef<string[]>([]);
   const discoverSeen = useRef(new Set<number>());
   const discoverArtistSeen = useRef(new Set<string>());
+  const discoverCultureSeen = useRef(new Set<string>());
+  const discoverTypeSeen = useRef(new Set<string>());
   const discoverOffsets = useRef<Record<string, number>>({});
   const discoverScope = useRef(library.settings.scope);
   const [busy, setBusy] = useState(false);
@@ -546,6 +551,8 @@ export default function App() {
     if (!ready) return;
     discoverSeen.current = new Set(library.discoveryExposure?.ids || []);
     discoverArtistSeen.current = new Set(library.discoveryExposure?.artistKeys || []);
+    discoverCultureSeen.current = new Set(library.discoveryExposure?.cultureKeys || []);
+    discoverTypeSeen.current = new Set(library.discoveryExposure?.typeKeys || []);
     discoverArtists.current = library.discoveryExposure?.topics || [];
     discoverOffsets.current = library.discoveryExposure?.offsets || {};
     if (discoverScope.current !== library.settings.scope) {
@@ -571,21 +578,30 @@ export default function App() {
         discoverOffsets.current,
         controller.signal,
         discoverArtistSeen.current,
+        discoverCultureSeen.current,
+        discoverTypeSeen.current,
       );
       if (controller.signal.aborted) return;
       if (!result.artworks.length) {
         setDiscoverError("这组主题暂时没有可展示的作品，请再刷新一次。");
       } else {
         discoverArtists.current = result.artists;
+        setDiscoverCoverage(result.coverage);
         discoverOffsets.current = result.offsets;
         result.artworks.forEach((art) => discoverSeen.current.add(art.id));
         result.artworks.forEach((art) => {
           const key = art.artist.trim().toLocaleLowerCase();
           if (key && key !== "艺术家未标注") discoverArtistSeen.current.add(key);
+          const culture = art.facets?.culture?.value.trim().toLocaleLowerCase();
+          const type = art.facets?.objectType?.value.trim().toLocaleLowerCase();
+          if (culture) discoverCultureSeen.current.add(culture);
+          if (type) discoverTypeSeen.current.add(type);
         });
         setLibrary((current) => ({ ...current, discoveryExposure: {
           ids: [...new Set([...(current.discoveryExposure?.ids || []), ...result.artworks.map((art) => art.id)])].slice(-500),
           artistKeys: [...new Set([...(current.discoveryExposure?.artistKeys || []), ...result.artworks.map((art) => art.artist.trim().toLocaleLowerCase()).filter((key) => key && key !== "艺术家未标注")])].slice(-200),
+          cultureKeys: [...new Set([...(current.discoveryExposure?.cultureKeys || []), ...result.artworks.map((art) => art.facets?.culture?.value.trim().toLocaleLowerCase()).filter((key): key is string => !!key)])].slice(-200),
+          typeKeys: [...new Set([...(current.discoveryExposure?.typeKeys || []), ...result.artworks.map((art) => art.facets?.objectType?.value.trim().toLocaleLowerCase()).filter((key): key is string => !!key)])].slice(-200),
           topics: result.artists, offsets: result.offsets,
         } }));
         setDiscover(result.artworks);
@@ -774,6 +790,7 @@ export default function App() {
     chosen?: { query: string; scope?: Settings["scope"] },
     similarTo?: Artwork,
     edited?: { source: Message; query: string; criteria: SearchCriteria },
+    branch?: { plan: BranchPlan; parent: NonNullable<Conversation["parent"]> },
   ) {
     const text = value.trim();
     if (!text || busy || !ready) return;
@@ -794,7 +811,7 @@ export default function App() {
       ? {
           id: crypto.randomUUID(),
           role: "assistant",
-          text: `以《${similarTo.title}》（${similarTo.artist}，${similarTo.date}）为参照，比较艺术风格并寻找可核对的开放馆藏作品。`,
+          text: branch?.plan.request || `以《${similarTo.title}》（${similarTo.artist}，${similarTo.date}）为参照，比较艺术风格并寻找可核对的开放馆藏作品。`,
           artworks: [similarTo],
         }
       : null;
@@ -813,6 +830,7 @@ export default function App() {
             id,
             title: text.slice(0, 40),
             updated: Date.now(),
+            parent: branch?.parent,
             messages: [...history, user],
           },
           ...l.conversations,
@@ -829,6 +847,9 @@ export default function App() {
         ? { action: "search", query: edited.query, targetArtist: edited.source.targetArtist,
             artistAliases: edited.source.artistAliases, identityCandidates: edited.source.identityCandidates,
             criteria: edited.criteria, explanation: "按直接修订的条件重新检索。" }
+        : branch
+        ? { action: "search", query: branch.plan.query, criteria: branch.plan.criteria,
+            explanation: `沿“${branch.plan.label}”方向寻找候选，关联性仍需复核。` }
         : chosen
         ? {
             query: chosen.query,
@@ -844,7 +865,7 @@ export default function App() {
             controller.signal,
           );
       if (controller.signal.aborted) return;
-      if (!chosen && !edited && isRecommendationRequest(text) && !library.settings.useAi) {
+      if (!chosen && !edited && !branch && isRecommendationRequest(text) && !library.settings.useAi) {
         updateConversation(id, (c) => ({
           ...c,
           messages: [
@@ -870,8 +891,9 @@ export default function App() {
         const responseId = crypto.randomUUID();
         const needsReview = library.settings.useAi && desktop && (result.artworks.length > 0 || result.webResults.length > 0);
         const previousIntent = [...history].reverse().find((item) => item.exploreIntent)?.exploreIntent;
-        const exploreIntent = buildExploreIntent({ request: text, targetArtist: plan.targetArtist, criteria: plan.criteria,
-          previous: continueExisting ? previousIntent : undefined, anchorWorkKeys: similarTo ? [similarTo.recordKey || `${similarTo.provider || "commons"}:${similarTo.id}`] : [] });
+        const exploreIntent = buildExploreIntent({ request: text, query: plan.query, targetArtist: plan.targetArtist, criteria: plan.criteria,
+          previous: continueExisting ? previousIntent : undefined, anchorWorkKeys: similarTo ? [similarTo.recordKey || `${similarTo.provider || "commons"}:${similarTo.id}`] : [],
+          relation: branch?.plan.relation });
         const message: Message = { id: responseId, role: "assistant", text: needsReview ? "已搜到候选，正在逐件复核资料与缩略图…" : "正在整理搜索结果…", error: result.failed,
           artworks: result.artworks, webResults: result.webResults, searchWarning: result.warning,
           query: plan.query, targetArtist: plan.targetArtist, artistAliases: plan.artistAliases,
@@ -891,6 +913,29 @@ export default function App() {
             selected = { ...selected, artworks: result.artworks.map((art) => ({ ...art, review: unknown })), webResults: result.webResults.map((item) => ({ ...item, review: unknown })), warning: `复核暂不可用：${errorText(error)}` };
           }
         }
+        if (needsReview && result.artworks.length && !selected.artworks.length && result.diagnostics) {
+          setPhase("首批候选均未通过复核，正在预算内补查另一馆藏…");
+          try {
+            const supplemental = await supplementAfterRejection({ query: plan.query, settings: library.settings,
+              constraints: plan, diagnostics: result.diagnostics, signal: controller.signal });
+            if (supplemental) {
+              result.diagnostics = supplemental.diagnostics;
+              result.offsets = { ...result.offsets, ...supplemental.offsets };
+              result.warning = [result.warning, supplemental.warning].filter(Boolean).join(" ");
+              if (supplemental.artworks.length) {
+                const extra = await reviewCandidates(text, history, plan, supplemental.artworks, [], library.settings,
+                  controller.signal, setPhase, 0);
+                selected = { artworks: extra.artworks, webResults: selected.webResults,
+                  rejectedArtworks: [...selected.rejectedArtworks, ...extra.rejectedArtworks],
+                  rejectedWebResults: selected.rejectedWebResults,
+                  warning: [selected.warning, extra.warning].filter(Boolean).join(" ") };
+              }
+            }
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            result.warning = [result.warning, `补查暂不可用：${errorText(error)}`].filter(Boolean).join(" ");
+          }
+        }
         if (controller.signal.aborted) return;
         const uncertain = selected.artworks.filter((art) => art.review?.verdict === "uncertain").length;
         const removed = selected.rejectedArtworks.length + selected.rejectedWebResults.length;
@@ -904,6 +949,7 @@ export default function App() {
           ...m, text: fallback, artworks: selected.artworks, webResults: selected.webResults,
           rejectedArtworks: selected.rejectedArtworks, rejectedWebResults: selected.rejectedWebResults,
           reviewPending: false, reviewCompleted: needsReview, searchWarning: warning,
+          retrievalDiagnostics: result.diagnostics, providerOffsets: result.offsets,
         } : m) }));
         if (library.settings.useAi && desktop) {
           setPhase("策展人正在根据复核后的结果回答…");
@@ -1004,9 +1050,10 @@ export default function App() {
     const controller = new AbortController();
     request.current = controller;
     try {
-      const r = message.providerOffsets
-        ? await searchAcrossProviders(message.query!, message.scope || library.settings.scope, controller.signal, message.providerOffsets, { targetArtist: message.targetArtist, artistAliases: message.artistAliases, criteria: message.searchCriteria })
-        : await searchArt(message.query!, message.scope || library.settings.scope, message.offset, controller.signal);
+      const r = await runContinuationSearch({ query: message.query!, scope: message.scope || library.settings.scope,
+        offsets: message.providerOffsets, legacyOffset: message.offset, rotation: message.continuationRotation,
+        targetArtist: message.targetArtist, artistAliases: message.artistAliases, criteria: message.searchCriteria,
+        signal: controller.signal });
       if (controller.signal.aborted) return;
       const newArtworks = r.artworks.filter((art) => ![...(message.artworks || []), ...(message.rejectedArtworks || [])].some((old) => old.id === art.id));
       const needsReview = library.settings.useAi && desktop && newArtworks.length > 0;
@@ -1039,9 +1086,11 @@ export default function App() {
                 pageReviewPending: false,
                 pendingPageArtworks: undefined,
                 reviewCompleted: m.reviewCompleted || (library.settings.useAi && desktop && newArtworks.length > 0),
-                searchWarning: [m.searchWarning, "warning" in r ? r.warning : "", reviewed.warning].filter(Boolean).join(" "),
-                offset: "offsets" in r ? undefined : r.offset,
-                providerOffsets: "offsets" in r ? r.offsets : undefined,
+                searchWarning: [m.searchWarning, r.warning, reviewed.warning].filter(Boolean).join(" "),
+                offset: r.legacyOffset,
+                providerOffsets: r.offsets,
+                continuationRotation: r.rotation,
+                continuationRuns: [...(m.continuationRuns || []), r.diagnostics].slice(-12),
               }
             : m,
         ),
@@ -1133,6 +1182,22 @@ export default function App() {
     setInput("");
     setFilter("");
   }
+  function exploreFromArtwork(art: Artwork, relation: BranchPlan["relation"]) {
+    if (busy) return;
+    const plan = planArtworkBranch(art, relation);
+    const source = [...(current?.messages || [])].reverse().find((message) => message.artworks?.some((item) => item.id === art.id));
+    const parent: NonNullable<Conversation["parent"]> = { view, conversationId: view === "chat" ? active || undefined : undefined,
+      messageId: source?.id, scrollY: window.scrollY, relation };
+    setContext(null);
+    void send(plan.request, undefined, art, undefined, { plan, parent });
+  }
+  function returnToParent(parent: NonNullable<Conversation["parent"]>) {
+    if (busy) return;
+    const available = parent.conversationId && library.conversations.some((conversation) => conversation.id === parent.conversationId);
+    setActive(available ? parent.conversationId! : null);
+    setView(available ? "chat" : parent.view === "chat" ? "discover" : parent.view);
+    requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo({ top: parent.scrollY || 0 })));
+  }
   function cards(arts: Artwork[], showSimilar = false, numbered = false) {
     return (
       <div className="gallery-grid">
@@ -1160,7 +1225,7 @@ export default function App() {
               setContext({
                 art,
                 x: Math.min(x, window.innerWidth - 250),
-                y: Math.min(y, window.innerHeight - 220),
+                y: Math.max(8, Math.min(y, window.innerHeight - 350)),
               });
             }}
           />
@@ -1488,7 +1553,9 @@ export default function App() {
                   </button>
                 </div>
                 <div className="collection-toolbar">
-                  <span>跨越题材与媒材 · 发现不熟悉的画家</span>
+                  <span>{discoverCoverage
+                    ? `本组新见 ${discoverCoverage.newArtists} 位作者 · ${discoverCoverage.newCultures} 种文化标注 · ${discoverCoverage.newTypes} 种作品类型（缺失不计）`
+                    : "跨越题材与媒材 · 发现不熟悉的画家"}</span>
                   <span>
                     WIKIMEDIA <span className="middle-dot">·</span> CLEVELAND <span className="middle-dot">·</span> CHICAGO
                   </span>
@@ -1797,6 +1864,9 @@ export default function App() {
                   ))}
                 </div>
               )}
+              {current?.parent && <button className="intent-edit-button" disabled={busy} onClick={() => returnToParent(current.parent!)}>
+                ← 返回{current.parent.conversationId ? "上一级对话" : "原展墙"}
+              </button>}
               {current?.messages.map((m) => (
                 <section
                   key={m.id}
@@ -1886,9 +1956,19 @@ export default function App() {
                       : "查看检索计划"}</summary>
                     <p>检索词：{(m.searchQueries || [m.query]).filter(Boolean).join(" → ")}</p>
                     {m.searchCriteria && <><p>必须：{m.searchCriteria.required.join("；") || "未指定"}</p><p>偏好：{m.searchCriteria.preferred.join("；") || "未指定"}</p><p>排除：{m.searchCriteria.excluded.join("；") || "未指定"}</p></>}
+                    {m.exploreIntent?.changes && <p>第 {m.exploreIntent.revision} 版调整：{
+                      [m.exploreIntent.changes.added.length ? `新增 ${m.exploreIntent.changes.added.join("、")}` : "",
+                        m.exploreIntent.changes.removed.length ? `移除 ${m.exploreIntent.changes.removed.join("、")}` : "",
+                        ...m.exploreIntent.changes.moved.map((change) => `${change.value}：${change.from}→${change.to}`),
+                        m.exploreIntent.changes.queryChanged ? "检索词已变更" : "",
+                        m.exploreIntent.changes.artistChanged ? "指定作者已变更" : ""].filter(Boolean).join("；") || "条件未变"}</p>}
                     {m.retrievalDiagnostics?.sourceQueries?.map((plan, index) => <p key={`${plan.provider}-${index}`}>
-                      {plan.provider}：接口筛选 {plan.applied.join("、") || "无"}；留待复核 {plan.deferred.join("、") || "无"}
+                      {plan.provider}：{m.retrievalDiagnostics?.sourceStatuses?.[index]
+                        ? ({ ok: "取得候选", empty: "无结果", filtered: "作者过滤后为空", limited: "限流", error: "暂时故障" } as const)[m.retrievalDiagnostics.sourceStatuses[index].state]
+                        : "状态未记录"}
+                      ；接口筛选 {plan.applied.join("、") || "无"}；留待复核 {plan.deferred.join("、") || "无"}
                     </p>)}
+                    {!!m.continuationRuns?.length && <p>继续搜集：{m.continuationRuns.reduce((count, run) => count + run.sourceCalls, 0)} 次来源查询；最近一轮 {m.continuationRuns.at(-1)?.attemptedProviders.join("、")}</p>}
                     {[...(m.artworks || []), ...(m.webResults || []), ...(m.rejectedArtworks || []), ...(m.rejectedWebResults || [])].filter((item) => item.review).map((item) => <div className={`review-audit-item ${item.review!.verdict}`} key={"id" in item ? item.id : item.url}>
                       <strong>{item.review!.verdict === "reject" ? "已排除" : item.review!.verdict === "keep" ? "相关" : "待核实"} · {item.title}</strong>
                       <p>{item.review!.reason}</p>
@@ -1974,6 +2054,12 @@ export default function App() {
           >
             <Maximize2 size={16} />
             查看作品
+          </button>
+          <button disabled={busy} onClick={() => exploreFromArtwork(context.art, "composition")}>
+            <Sparkles size={16} /> 按构图继续找
+          </button>
+          <button disabled={busy} onClick={() => exploreFromArtwork(context.art, "medium")}>
+            <Sparkles size={16} /> 同题材换媒材
           </button>
           <button disabled={hdBusy} onClick={() => void loadHd(context.art)}>
             <ArrowDownToLine size={16} />

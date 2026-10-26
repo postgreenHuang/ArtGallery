@@ -180,6 +180,16 @@ describe("artist search precision and source isolation", () => {
     expect(result.artworks).toEqual([]);
     expect(result.warning).toContain("作者不匹配");
     expect(result.offsets.chicago).toBe(8);
+    expect(result.sourceStatuses.find((status) => status.provider === "chicago")?.state).toBe("filtered");
+  });
+  it("distinguishes a limited source from an empty collection", async () => {
+    invoke.mockRejectedValue(new Error("HTTP 429 限流"));
+    const result = await searchAcrossProviders("landscape", "commons", new AbortController().signal, undefined, { providers: ["met"] });
+    expect(result.sourceStatuses).toMatchObject([{ provider: "met", state: "limited", candidateCount: 0 }]);
+    expect(result.warning).toContain("馆藏搜索失败");
+    const curated = await searchForCurator("landscape", { ...defaultLibrary.settings, webSearch: false }, new AbortController().signal,
+      { providers: ["met"] });
+    expect(curated.failed).toBe(true);
   });
   it("keeps web clues if every museum fails and never presents web clues as verified artwork", async () => {
     invoke.mockImplementation(async (cmd) => {
