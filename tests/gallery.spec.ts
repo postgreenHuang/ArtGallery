@@ -666,9 +666,14 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await page.getByRole("button", { name: /偏好与资料库/ }).click();
   await page.getByRole("button", { name: "资料库与同步" }).click();
   await expect(page.getByText("一个文件夹，带走你的美术馆。")).toBeVisible();
+  await page.getByRole("button", { name: "清除首页已见记录" }).click();
+  await expect(page.getByText("首页已见记录已清除", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "清理临时图片" }).click();
-  await expect(page.getByRole("status")).toContainText("画架图片已保留");
+  await expect(page.getByText("画架图片已保留", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "关闭设置" }).click();
+  await page.getByRole("button", { name: /往日对话/ }).click();
+  await page.getByRole("tab", { name: /灵感寻画/ }).click();
+  await expect(page.locator(".history-list")).toContainText("莫奈的睡莲");
   await page.getByRole("button", { name: /我的画架/ }).click();
   await expect(page.locator(".art-image img")).toHaveAttribute("src", /^blob:/);
   await page.screenshot({ path: "test-results/history.png", fullPage: true });

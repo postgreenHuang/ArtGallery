@@ -2315,6 +2315,18 @@ export default function App() {
             setPersistError("");
             setToast("已切换资料库");
           }}
+          onClearDiscovery={() => {
+            discoverRequest.current?.abort();
+            discoverSeen.current.clear();
+            discoverArtistSeen.current.clear();
+            discoverCultureSeen.current.clear();
+            discoverTypeSeen.current.clear();
+            discoverArtists.current = [];
+            discoverOffsets.current = {};
+            setLibrary((current) => ({ ...current, discoveryExposure: { ids: [], artistKeys: [], cultureKeys: [], typeKeys: [], topics: [], offsets: {} } }));
+            setDiscoverCoverage(null);
+            void refreshDiscovery();
+          }}
           flush={() => writeLibrary(library)}
         />
       )}
@@ -2392,6 +2404,7 @@ function SettingsDialog({
   onClose,
   onSave,
   onSwitch,
+  onClearDiscovery,
   flush,
   blocked,
 }: {
@@ -2400,6 +2413,7 @@ function SettingsDialog({
   onClose: () => void;
   onSave: (s: Settings) => void;
   onSwitch: () => Promise<void>;
+  onClearDiscovery: () => void;
   flush: () => Promise<void>;
   blocked: boolean;
 }) {
@@ -2413,6 +2427,7 @@ function SettingsDialog({
   const [working, setWorking] = useState(false);
   const [cacheResult, setCacheResult] = useState("");
   const [cacheCleared, setCacheCleared] = useState(false);
+  const [exposureCleared, setExposureCleared] = useState(false);
   const [tab, setTab] = useState<"ai" | "library">("ai");
   useEffect(() => {
     if (desktop)
@@ -2727,6 +2742,14 @@ function SettingsDialog({
                 library.json · collection/originals/ · cache/（旧版 images/
                 自动兼容）
               </small>
+            </div>
+            <div className="cache-cleanup">
+              <h4>首页漫游记录</h4>
+              <p>首页会记住已展示的作品与作者，减少反复刷到同一组。清除后可从头探索；不会删除画架、浏览历史或对话。</p>
+              <button className="secondary-button" disabled={working || blocked} onClick={() => { onClearDiscovery(); setExposureCleared(true); }}>
+                清除首页已见记录
+              </button>
+              {exposureCleared && <p role="status">首页已见记录已清除，正在重新搜集；画架和历史不受影响。</p>}
             </div>
             <div className="cache-cleanup">
               <h4>临时图片缓存</h4>
