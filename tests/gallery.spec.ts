@@ -82,6 +82,36 @@ test("exact artist search keeps a museum record without an image as a saveable s
   await page.getByRole("button", { name: /我的画架/ }).click();
   await expect(page.locator(".art-card").filter({ hasText: "Unpictured Garden" })).toBeVisible();
 });
+test("corrupt desktop library offers explicit backup recovery before reopening", async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = window as any;
+    state.isTauri = true;
+    state.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" } },
+      transformCallback: () => 1,
+      unregisterCallback: () => {},
+      invoke: async (command: string) => {
+        if (command === "load_library") return localStorage.getItem("library-restored")
+          ? JSON.stringify({ version: 1, saved: [], conversations: [], viewed: [] }) : "{broken data";
+        if (command === "library_backup_summary") return { saved: 2, conversations: 1 };
+        if (command === "restore_library_backup") {
+          localStorage.setItem("library-restored", "yes");
+          return "C:\\Gallery\\library.corrupt-123.json";
+        }
+        if (command === "commons_query") return { query: { pages: [] } };
+        return null;
+      },
+    };
+    window.confirm = () => true;
+  });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "资料库暂时无法打开" })).toBeVisible();
+  await expect(page.getByText("找到上一次有效备份：2 件收藏、1 个会话", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "从备份恢复资料库" }).click();
+  await expect(page.getByRole("status")).toContainText("原文件保存在");
+  await page.getByRole("button", { name: "重新加载" }).click();
+  await expect(page.getByRole("button", { name: /发现艺术/ })).toBeVisible();
+});
 test("fullscreen browses artworks from the same search result", async ({ page }) => {
   const second = {
     ...fixture,

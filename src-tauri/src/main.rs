@@ -42,7 +42,7 @@ fn atomic_write(path:&Path, data:&[u8]) -> Result<(),String> {
 }
 fn validate_library(data:&str)->Result<(),String> {let v:Value=serde_json::from_str(data).map_err(err)?;if v["version"]!=1||!v["conversations"].is_array()||!v["saved"].is_array(){return Err("资料库格式不兼容".into())} Ok(())}
 #[tauri::command]
-fn load_library(state:State<AppState>)->Result<Option<String>,String>{let mut s=state.library.lock().map_err(err)?;let data=read_optional(&s.root.join("library.json"))?;if let Some(ref d)=data{validate_library(d)?;}s.last=data.clone();Ok(data)}
+fn load_library(state:State<AppState>)->Result<Option<String>,String>{let mut s=state.library.lock().map_err(err)?;let data=read_optional(&s.root.join("library.json"))?;s.last=data.clone();if let Some(ref d)=data{validate_library(d)?;}Ok(data)}
 #[tauri::command]
 fn save_library(data:String,state:State<AppState>)->Result<(),String>{
     let mut s=state.library.lock().map_err(err)?;save_snapshot(&mut s,data)
@@ -53,8 +53,45 @@ fn save_snapshot(s:&mut LibraryState,data:String)->Result<(),String>{
     lock.try_lock_exclusive().map_err(|_|"资料库正在被另一个进程写入，请稍后重试".to_string())?;
     let current=read_optional(&s.root.join("library.json"))?;
     if current!=s.last {return Err("检测到同步或其他窗口修改了资料库。为防止覆盖，已停止保存；请重启应用重新载入。".into())}
+    if current.as_deref().is_some_and(|old|validate_library(old).is_err()) {return Err("资料库格式不兼容，不能直接覆盖；请先从备份恢复".into())}
     if let Some(ref old)=current {atomic_write(&s.root.join("library.backup.json"),old.as_bytes())?;}
     atomic_write(&s.root.join("library.json"),data.as_bytes())?;s.last=Some(data);Ok(())
+}
+#[derive(serde::Serialize)]
+struct BackupSummary { saved: usize, conversations: usize }
+fn read_backup_summary(root:&Path)->Result<Option<BackupSummary>,String>{
+    let Some(data)=read_optional(&root.join("library.backup.json"))? else {return Ok(None)};
+    validate_library(&data)?;
+    let value:Value=serde_json::from_str(&data).map_err(err)?;
+    Ok(Some(BackupSummary{saved:value["saved"].as_array().map_or(0,Vec::len),conversations:value["conversations"].as_array().map_or(0,Vec::len)}))
+}
+#[tauri::command]
+fn library_backup_summary(state:State<AppState>)->Result<Option<BackupSummary>,String>{
+    let s=state.library.lock().map_err(err)?;read_backup_summary(&s.root)
+}
+fn restore_backup_snapshot(s:&mut LibraryState)->Result<String,String>{
+    let lock=fs::OpenOptions::new().create(true).truncate(false).write(true).open(s.root.join(".write.lock")).map_err(err)?;
+    lock.try_lock_exclusive().map_err(|_|"资料库正在被另一个进程写入，请稍后重试".to_string())?;
+    let backup=read_optional(&s.root.join("library.backup.json"))?.ok_or("没有可用的资料库备份")?;
+    validate_library(&backup)?;
+    let current=read_optional(&s.root.join("library.json"))?;
+    if current!=s.last {return Err("资料库在恢复前已被其他程序修改，请重新启动后再试".into())}
+    if current.as_deref().is_some_and(|data|validate_library(data).is_ok()){
+        return Err("当前资料库仍可读取；为避免覆盖，不能使用损坏资料库恢复功能".into())
+    }
+    let archived=if let Some(ref data)=current {
+        let name=format!("library.corrupt-{}-{}.json",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_nanos());
+        let path=s.root.join(name);
+        {use std::io::Write;let mut file=fs::OpenOptions::new().create_new(true).write(true).open(&path).map_err(err)?;file.write_all(data.as_bytes()).map_err(err)?;file.sync_all().map_err(err)?;}
+        Some(path)
+    }else{None};
+    atomic_write(&s.root.join("library.json"),backup.as_bytes())?;
+    s.last=Some(backup);
+    Ok(archived.map(|path|path.to_string_lossy().into_owned()).unwrap_or_default())
+}
+#[tauri::command]
+fn restore_library_backup(state:State<AppState>)->Result<String,String>{
+    let mut s=state.library.lock().map_err(err)?;restore_backup_snapshot(&mut s)
 }
 const IMAGE_DIRS: [&str; 6] = ["images", "cache/thumbnails", "cache/medium-resolution", "cache/high-resolution", "cache/originals", "collection/originals"];
 fn copy_tree(source:&Path,target:&Path)->Result<(),String>{
@@ -453,7 +490,7 @@ fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init(
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
     app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,wikidata_artist_search,read_source_page,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_backup_summary,restore_library_backup,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,wikidata_artist_search,read_source_page,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
     if let Err(error)=result{if !error.to_string().contains("资料库恢复已取消"){
         rfd::MessageDialog::new().set_title("拾色启动失败").set_level(rfd::MessageLevel::Error).set_description(error.to_string()).show();
     }}
@@ -552,6 +589,27 @@ mod tests {use super::*;
     #[test]fn backup_and_conflict_protection(){let mut s=fixture();save_snapshot(&mut s,data("first")).unwrap();save_snapshot(&mut s,data("second")).unwrap();assert_eq!(fs::read_to_string(s.root.join("library.backup.json")).unwrap(),data("first"));fs::write(s.root.join("library.json"),data("remote")).unwrap();assert!(save_snapshot(&mut s,data("local")).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("remote"));fs::remove_dir_all(s.root).unwrap();}
     #[test]fn migration_copies_images_and_keeps_source(){let mut s=fixture();let t=fixture();fs::remove_dir(t.root.join("images")).unwrap();save_snapshot(&mut s,data("collection")).unwrap();fs::write(s.root.join("images/1.jpg"),b"image fixture").unwrap();copy_library(&s,&t.root).unwrap();assert_eq!(fs::read(t.root.join("images/1.jpg")).unwrap(),b"image fixture");assert!(s.root.join("library.json").exists());assert!(copy_library(&s,&t.root).is_err());fs::remove_dir_all(s.root).unwrap();fs::remove_dir_all(t.root).unwrap();}
     #[test]fn malformed_data_does_not_replace_library(){let mut s=fixture();save_snapshot(&mut s,data("good")).unwrap();assert!(save_snapshot(&mut s,"{}".into()).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("good"));fs::remove_dir_all(s.root).unwrap();}
+    #[test]fn explicit_backup_recovery_archives_corrupt_original(){
+        let mut s=fixture();save_snapshot(&mut s,data("original")).unwrap();save_snapshot(&mut s,data("recoverable")).unwrap();
+        assert_eq!(read_backup_summary(&s.root).unwrap().unwrap().saved,0);
+        assert!(restore_backup_snapshot(&mut s).is_err());
+        fs::write(s.root.join("library.json"),"{broken data").unwrap();s.last=Some("{broken data".into());
+        assert!(save_snapshot(&mut s,data("must-not-overwrite")).is_err());
+        let archived=restore_backup_snapshot(&mut s).unwrap();
+        assert_eq!(fs::read_to_string(&archived).unwrap(),"{broken data");
+        assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("original"));
+        assert_eq!(fs::read_to_string(s.root.join("library.backup.json")).unwrap(),data("original"));
+        assert!(restore_backup_snapshot(&mut s).is_err());
+        fs::remove_dir_all(s.root).unwrap();
+    }
+    #[test]fn invalid_backup_never_replaces_corrupt_library(){
+        let mut s=fixture();fs::write(s.root.join("library.json"),"{broken data").unwrap();s.last=Some("{broken data".into());
+        fs::write(s.root.join("library.backup.json"),"{}").unwrap();
+        assert!(read_backup_summary(&s.root).is_err());
+        assert!(restore_backup_snapshot(&mut s).is_err());
+        assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),"{broken data");
+        fs::remove_dir_all(s.root).unwrap();
+    }
     #[test]fn large_library_roundtrip_keeps_backup_and_every_record(){
         let mut source=fixture();let target=fixture();fs::remove_dir(target.root.join("images")).unwrap();
         let saved=(0..1000).map(|id|json!({"id":id,"title":format!("Artwork {id}"),"local":format!("images/{id}-original.jpg")})).collect::<Vec<_>>();

@@ -357,6 +357,9 @@ export default function App() {
   );
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState("");
+  const [backupSummary, setBackupSummary] = useState<{ saved: number; conversations: number } | null>(null);
+  const [backupNotice, setBackupNotice] = useState("");
+  const [restoringBackup, setRestoringBackup] = useState(false);
   const [persistError, setPersistError] = useState("");
   const [view, setView] = useState<"discover" | "easel" | "viewed" | "history" | "chat">(
     "discover",
@@ -414,6 +417,12 @@ export default function App() {
       .catch((e) => setFatal(errorText(e)));
     return () => request.current?.abort();
   }, []);
+  useEffect(() => {
+    if (!fatal || !desktop) return;
+    void invoke<{ saved: number; conversations: number } | null>("library_backup_summary")
+      .then((summary) => { setBackupSummary(summary); if (!summary) setBackupNotice("没有可用的本地备份。"); })
+      .catch((error) => setBackupNotice(`备份不可用：${errorText(error)}`));
+  }, [fatal]);
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const applyTheme = () => {
@@ -1332,6 +1341,21 @@ export default function App() {
         <p>{fatal}</p>
         <button onClick={() => location.reload()}>重新加载</button>
         <p>为保护原始文件，应用没有创建新资料覆盖它。</p>
+        {backupSummary && <div>
+          <p>找到上一次有效备份：{backupSummary.saved} 件收藏、{backupSummary.conversations} 个会话。恢复会保留目前损坏的文件副本，但备份可能缺少最近一次修改。</p>
+          <button disabled={restoringBackup} onClick={() => {
+            if (!window.confirm("确认从上一次有效备份恢复？当前损坏文件会另存保留，最近一次修改可能不在备份中。")) return;
+            setRestoringBackup(true);
+            void invoke<string>("restore_library_backup")
+              .then((archived) => {
+                setBackupNotice(`备份已恢复。${archived ? `原文件保存在：${archived}。` : "原资料库文件不存在。"}请重新加载应用。`);
+                setBackupSummary(null);
+              })
+              .catch((error) => setBackupNotice(`恢复失败，原资料库未被覆盖：${errorText(error)}`))
+              .finally(() => setRestoringBackup(false));
+          }}>{restoringBackup ? "正在恢复…" : "从备份恢复资料库"}</button>
+        </div>}
+        {backupNotice && <p role="status">{backupNotice}</p>}
       </div>
     );
   return (
