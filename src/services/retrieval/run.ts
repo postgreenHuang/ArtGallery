@@ -66,10 +66,12 @@ export async function runCuratorSearch(args: {
 
   if (!result.artworks.length && sourceCalls < sourceLimit) {
     const alternative = [...new Set((args.alternativeQueries || []).map((query) => query.trim()).filter(Boolean))]
-      .find((query) => query !== args.query) || args.query;
+      .find((query) => query !== args.query);
+    const limited = new Set(sourceStatuses.filter((status) => status.state === "limited").map((status) => status.provider));
     const supplementProviders: ArtProvider[] = settings.webSearch ? ["met"] : ["met", "commons"];
-    const permitted = supplementProviders.slice(0, sourceLimit - sourceCalls - Number(settings.webSearch && args.desktop));
-    if (permitted.length) {
+    const permitted = supplementProviders.filter((provider) => !limited.has(provider))
+      .slice(0, sourceLimit - sourceCalls - Number(settings.webSearch && args.desktop));
+    if (alternative && permitted.length) {
       args.onPhase?.("相关馆藏不足，正在预算内补查其他来源…");
       sourceCalls += permitted.length;
       attemptedQueries.push(alternative);

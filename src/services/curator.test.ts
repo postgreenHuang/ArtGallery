@@ -205,10 +205,12 @@ describe("artist search precision and source isolation", () => {
     expect(normalizeMet(met)?.id).toBe(3_000_000_000_001);
     expect(normalizeMet({ ...met, isPublicDomain: false })).toBeNull();
     expect(normalizeMet({ ...met, primaryImage: "https://images.metmuseum.org.evil.test/a.jpg" })).toBeNull();
+    expect(normalizeMet({ ...met, primaryImage: undefined, primaryImageSmall: undefined })).toMatchObject({ thumb: "", original: "" });
     invoke.mockResolvedValueOnce({ objectIDs: [1], total: 20 }).mockResolvedValueOnce(met);
     const result = await searchMet("Claude Monet", 8, new AbortController().signal, true);
     expect(invoke.mock.calls[0][1].path).toContain("offset=8");
     expect(invoke.mock.calls[0][1].path).toContain("artistOrCulture=true");
+    expect(invoke.mock.calls[0][1].path).not.toContain("hasImages=true");
     expect(result.offset).toBe(16);
     expect(result.artworks[0].artist).toBe("Claude Monet");
   });

@@ -58,6 +58,30 @@ const fixture = {
     },
   ],
 };
+test("exact artist search keeps a museum record without an image as a saveable source card", async ({ page }) => {
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => route.fulfill({ json: { query: { pages: [] } } }));
+  await page.route("https://openaccess-api.clevelandart.org/**", (route) => route.fulfill({ json: {
+    info: { total: 1 }, data: [{ id: 9001, title: "Unpictured Garden", share_license_status: "CC0",
+      creators: [{ role: "artist", description: "Claude Monet" }], accession_number: "9001" }],
+  } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("Claude Monet");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  const card = page.locator(".art-card").filter({ hasText: "Unpictured Garden" });
+  await expect(card).toBeVisible();
+  await expect(card.getByText("馆藏未提供图片")).toBeVisible();
+  await card.getByRole("button", { name: "保存馆藏资料到画架" }).click();
+  await expect(card.getByRole("button", { name: "已在画架 · 馆藏资料卡" })).toBeVisible();
+  await card.getByRole("button", { name: "查看馆藏资料 Unpictured Garden" }).click();
+  await expect(page.getByRole("dialog", { name: "作品详情" })).toContainText("馆藏暂未提供数字图像");
+  await expect(page.getByRole("button", { name: "全屏欣赏", exact: true })).toBeDisabled();
+  await expect(page.getByRole("link", { name: /查看馆藏记录与授权/ })).toHaveAttribute("href", "https://www.clevelandart.org/art/9001");
+  await page.getByRole("button", { name: "关闭作品详情" }).click();
+  await page.reload();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(page.locator(".art-card").filter({ hasText: "Unpictured Garden" })).toBeVisible();
+});
 test("fullscreen browses artworks from the same search result", async ({ page }) => {
   const second = {
     ...fixture,

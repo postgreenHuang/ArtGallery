@@ -43,6 +43,16 @@ describe("independent museum collections", () => {
     expect(record.facets?.subjects?.[0].value).toBe("Gardens");
   });
 
+  it("preserves public-domain source records without images for exact artist searches", () => {
+    expect(clevelandSearchParams("Claude Monet").get("has_image")).toBe("1");
+    expect(clevelandSearchParams("Claude Monet", 0, "Claude Monet").has("has_image")).toBe(false);
+    const cma = normalizeCleveland({ ...cleveland, images: undefined });
+    const aic = normalizeChicago({ ...chicago, image_id: undefined }, "");
+    expect(cma).toMatchObject({ provider: "cleveland", thumb: "", original: "", source: "https://www.clevelandart.org/art/101" });
+    expect(aic).toMatchObject({ provider: "chicago", thumb: "", original: "" });
+    expect(normalizeCleveland({ ...cleveland, images: { web: { url: "https://evil.example/a.jpg" } } })).toBeNull();
+  });
+
   it("keeps both museum results when Wikimedia returns 429", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);

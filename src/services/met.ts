@@ -33,7 +33,8 @@ function metImage(value: unknown): value is string {
   catch { return false; }
 }
 export function normalizeMet(record: MetRecord | null): Artwork | null {
-  if (!record || !Number.isSafeInteger(record.objectID) || record.objectID <= 0 || record.objectID >= 1_000_000_000_000 || !record.isPublicDomain || !metImage(record.primaryImage) || !metImage(record.primaryImageSmall)) return null;
+  if (!record || !Number.isSafeInteger(record.objectID) || record.objectID <= 0 || record.objectID >= 1_000_000_000_000 || !record.isPublicDomain ||
+    (record.primaryImage && !metImage(record.primaryImage)) || (record.primaryImageSmall && !metImage(record.primaryImageSmall))) return null;
   const source = `https://www.metmuseum.org/art/collection/search/${record.objectID}`;
   const artist = plain(record.artistDisplayName) || "艺术家未标注";
   return { id: 3_000_000_000_000 + record.objectID, provider: "met", recordKey: `met:${record.objectID}`, file: `MET:${record.objectID}`,
@@ -41,13 +42,14 @@ export function normalizeMet(record: MetRecord | null): Artwork | null {
     date: plain(record.objectDate) || "年代未标注", description: plain(record.medium),
     facets: { objectType: providerFacet(plain(record.classification), source), medium: providerFacet(plain(record.medium), source),
       culture: providerFacet(plain(record.culture), source), subjects: providerFacets(record.tags?.map((tag) => plain(tag.term)), source) },
-    thumb: record.primaryImageSmall, medium: record.primaryImageSmall, hd: record.primaryImage,
-    original: record.primaryImage, source,
+    thumb: record.primaryImageSmall || record.primaryImage || "", medium: record.primaryImageSmall || record.primaryImage || "", hd: record.primaryImage || "",
+    original: record.primaryImage || "", source,
     width: 0, height: 0, license: "Public domain", licenseUrl: "https://www.metmuseum.org/policies/image-resources",
     attribution: `The Metropolitan Museum of Art · ${plain(record.creditLine)}` };
 }
 export async function searchMet(query: string, offset = 0, signal?: AbortSignal, artistOnly = false, medium?: string) {
-  const params = new URLSearchParams({ q: query.slice(0, 160), hasImages: "true", offset: String(offset), limit: "8" });
+  const params = new URLSearchParams({ q: query.slice(0, 160), offset: String(offset), limit: "8" });
+  if (!artistOnly) params.set("hasImages", "true");
   if (artistOnly) params.set("artistOrCulture", "true");
   if (medium) params.set("medium", medium);
   const search = await metApi<MetSearch>(`v1.1/search?${params}`, signal);
@@ -55,5 +57,5 @@ export async function searchMet(query: string, offset = 0, signal?: AbortSignal,
   const results = await Promise.allSettled(ids.map(async (id: number) => normalizeMet(await metApi<MetRecord>(`v1/objects/${id}`, signal))));
   if (signal?.aborted) throw new DOMException("已停止", "AbortError");
   if (ids.length && results.every((r) => r.status === "rejected")) throw new Error("大都会作品详情暂不可用");
-  return { artworks: results.flatMap((r) => r.status === "fulfilled" && r.value ? [r.value] : []), offset: offset + 8 < Number(search.total || 0) ? offset + 8 : undefined };
+  return { artworks: results.flatMap((r) => r.status === "fulfilled" && r.value && (artistOnly || r.value.thumb) ? [r.value] : []), offset: offset + 8 < Number(search.total || 0) ? offset + 8 : undefined };
 }

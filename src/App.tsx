@@ -88,6 +88,7 @@ const isOriginalLocal = (local?: string) =>
     local.endsWith(":original") ||
     local.endsWith(":collection"));
 const fullImageLabel = (art: Artwork) => art.provider === "cleveland" ? "馆方高清 JPEG" : "原图";
+const hasArtworkImage = (art: Artwork) => !!(art.thumb || art.medium || art.hd || art.original);
 
 const prompts = [
   {
@@ -143,7 +144,8 @@ function ArtImage({
     onFailure?.(false);
     setSrc(saved || (desktop && !art.provider) ? "" : art.thumb);
     const image =
-      saved && preferOriginal && isOriginalLocal(saved.local)
+      !hasArtworkImage(art) && !saved?.local ? null
+      : saved && preferOriginal && isOriginalLocal(saved.local)
         ? localImage(saved.local)
         : saved
           ? cacheArtwork(art.id, art.thumb, "preview")
@@ -236,7 +238,7 @@ function ArtImage({
       ) : (
         <div className="image-placeholder">
           <ImageIcon size={28} />
-          <span>{failed ? "图片暂不可用" : "正在装裱…"}</span>
+          <span>{!hasArtworkImage(art) && !saved?.local ? "馆藏未提供图片" : failed ? "图片暂不可用" : "正在装裱…"}</span>
         </div>
       )}
     </div>
@@ -262,6 +264,7 @@ function ArtCard({
   position?: number;
 }) {
   const originalSaved = isOriginalLocal(saved?.local);
+  const hasImage = hasArtworkImage(art) || !!saved?.local;
   const [imageFailed, setImageFailed] = useState(false);
   const [imageRetry, setImageRetry] = useState(0);
   return (
@@ -276,11 +279,11 @@ function ArtCard({
       <button
         className="art-open"
         onClick={onOpen}
-        aria-label={`欣赏 ${art.title}`}
+        aria-label={`${hasImage ? "欣赏" : "查看馆藏资料"} ${art.title}`}
       >
         <ArtImage art={art} saved={saved} retryToken={imageRetry} onFailure={setImageFailed} />
         <span className="view-art">
-          <Maximize2 size={16} /> 欣赏作品
+          <Maximize2 size={16} /> {hasImage ? "欣赏作品" : "查看馆藏资料"}
         </span>
       </button>
       {imageFailed && (
@@ -292,23 +295,23 @@ function ArtCard({
         <div>
           <p>{art.artist.slice(0, 100)}</p>
           <h3 title={art.title}>{art.title}</h3>
-          {saved && !originalSaved && <small className="art-pending">{fullImageLabel(art)}待下载 · 点击书签重试</small>}
+          {saved && !originalSaved && art.original && <small className="art-pending">{fullImageLabel(art)}待下载 · 点击书签重试</small>}
         </div>
         <button
           className={`icon-button save ${saved ? "is-saved" : ""}`}
           aria-label={
             saved
-              ? originalSaved
+              ? !art.original ? "已在画架 · 馆藏资料卡" : originalSaved
                 ? `已在画架 · ${fullImageLabel(art)}`
                 : `重试下载${fullImageLabel(art)}`
-              : "加入画架"
+              : art.original ? "加入画架" : "保存馆藏资料到画架"
           }
           title={
             saved
-              ? originalSaved
+              ? !art.original ? "已在画架 · 馆藏资料卡" : originalSaved
                 ? `已在画架 · ${fullImageLabel(art)}`
                 : `重试下载${fullImageLabel(art)}`
-              : `加入画架 · 下载${fullImageLabel(art)}`
+              : art.original ? `加入画架 · 下载${fullImageLabel(art)}` : "加入画架 · 保存馆藏资料"
           }
           onClick={onSave}
           disabled={pending}
@@ -473,8 +476,13 @@ export default function App() {
     return () => document.removeEventListener("fullscreenchange", changed);
   }, [closeViewer]);
   function openViewer(art: Artwork, fromDetail = false, arts?: Artwork[]) {
+    if (!hasArtworkImage(art) && !savedFor(art.id)?.local) {
+      viewArtwork(art);
+      setContext(null);
+      return;
+    }
     viewerFromDetail.current = fromDetail;
-    if (arts) setViewerArts(arts);
+    if (arts) setViewerArts(arts.filter((item) => hasArtworkImage(item) || !!savedFor(item.id)?.local));
     else if (!viewerArts.some((item) => item.id === art.id)) setViewerArts([art]);
     viewArtwork(art);
     setContext(null);
@@ -1106,6 +1114,11 @@ export default function App() {
   }
   async function save(art: Artwork) {
     const existing = savedFor(art.id);
+    if (!art.original) {
+      if (!existing) setLibrary((l) => ({ ...l, saved: [{ artwork: art, local: "", savedAt: Date.now() }, ...l.saved] }));
+      setToast(existing ? "这条馆藏资料已在画架上" : "馆藏资料已收入画架；来源暂未提供可下载原图。");
+      return;
+    }
     if (existing && isOriginalLocal(existing.local)) {
       setToast(`这件作品的${fullImageLabel(art)}已经在画架上`);
       return;
@@ -1149,6 +1162,10 @@ export default function App() {
     }
   }
   async function loadHd(art: Artwork) {
+    if (!hasArtworkImage(art)) {
+      setToast("馆藏来源暂未提供图片；可以查看来源资料。");
+      return;
+    }
     setDetail(art);
     setContext(null);
     setHdBusy(true);
@@ -1221,7 +1238,7 @@ export default function App() {
                 : undefined
             }
             onContext={(x, y) => {
-              setViewerArts(arts);
+              setViewerArts(arts.filter((item) => hasArtworkImage(item) || !!savedFor(item.id)?.local));
               setContext({
                 art,
                 x: Math.min(x, window.innerWidth - 250),
@@ -2055,13 +2072,13 @@ export default function App() {
             <Maximize2 size={16} />
             查看作品
           </button>
-          <button disabled={busy} onClick={() => exploreFromArtwork(context.art, "composition")}>
+          <button disabled={busy || !hasArtworkImage(context.art)} onClick={() => exploreFromArtwork(context.art, "composition")}>
             <Sparkles size={16} /> 按构图继续找
           </button>
           <button disabled={busy} onClick={() => exploreFromArtwork(context.art, "medium")}>
             <Sparkles size={16} /> 同题材换媒材
           </button>
-          <button disabled={hdBusy} onClick={() => void loadHd(context.art)}>
+          <button disabled={hdBusy || !hasArtworkImage(context.art)} onClick={() => void loadHd(context.art)}>
             <ArrowDownToLine size={16} />
             加载高清 · 2400px
           </button>
@@ -2109,6 +2126,7 @@ export default function App() {
               className="fullscreen-button"
               onClick={() => openViewer(detail, true)}
               aria-label="全屏欣赏"
+              disabled={!hasArtworkImage(detail) && !savedFor(detail.id)?.local}
             >
               <Maximize2 size={17} />
               全屏欣赏
@@ -2123,8 +2141,8 @@ export default function App() {
             <div
               className="detail-canvas"
               role="button"
-              tabIndex={0}
-              aria-label={`全屏欣赏 ${detail.title}`}
+              tabIndex={hasArtworkImage(detail) || savedFor(detail.id)?.local ? 0 : -1}
+              aria-label={`${hasArtworkImage(detail) || savedFor(detail.id)?.local ? "全屏欣赏" : "馆藏资料"} ${detail.title}`}
               onClick={() => openViewer(detail, true)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
@@ -2147,7 +2165,7 @@ export default function App() {
                   ? `${detail.provider === "cleveland" ? "本地馆方高清 JPEG" : "本地原图"} · ${detail.width} × ${detail.height} px`
                   : hd[detail.id]
                     ? "高清 · 最长边 2400 px"
-                    : "轻量预览 · 缩略图"}
+                    : hasArtworkImage(detail) ? "轻量预览 · 缩略图" : "馆藏暂未提供数字图像"}
               </span>
             </div>
             <div className="detail-info">
@@ -2158,12 +2176,12 @@ export default function App() {
               <div className="detail-rule" />
               <p className="description">
                 {detail.description ||
-                  "这件作品尚未提供文字介绍。让目光在画面里多停留一会儿。"}
+                  (hasArtworkImage(detail) ? "这件作品尚未提供文字介绍。让目光在画面里多停留一会儿。" : "馆藏暂未提供文字介绍；可打开来源查看完整记录。")}
               </p>
               <dl>
                 <dt>可用数字图像</dt>
                 <dd>
-                  {detail.width} × {detail.height} px
+                  {hasArtworkImage(detail) ? `${detail.width} × ${detail.height} px` : "馆藏暂未提供"}
                 </dd>
                 <dt>授权标记</dt>
                 <dd>
@@ -2192,7 +2210,8 @@ export default function App() {
                 disabled={saving.includes(detail.id)}
               >
                 <Bookmark size={16} />
-                {isOriginalLocal(savedFor(detail.id)?.local)
+                {!detail.original ? savedFor(detail.id) ? "馆藏资料已在画架" : "保存馆藏资料到画架"
+                  : isOriginalLocal(savedFor(detail.id)?.local)
                   ? `已收入我的画架 · ${fullImageLabel(detail)}`
                   : savedFor(detail.id)
                     ? `重试下载${fullImageLabel(detail)}`
@@ -2208,6 +2227,7 @@ export default function App() {
               <button
                 className="secondary-button"
                 onClick={() => openViewer(detail, true)}
+                disabled={!hasArtworkImage(detail) && !savedFor(detail.id)?.local}
               >
                 <Maximize2 size={16} /> 全屏欣赏 · 可选画质
               </button>
@@ -2217,7 +2237,7 @@ export default function App() {
                 target="_blank"
                 rel="noreferrer"
               >
-                查看原图与完整授权 <ExternalLink size={14} />
+                {hasArtworkImage(detail) ? "查看原图与完整授权" : "查看馆藏记录与授权"} <ExternalLink size={14} />
               </a>
               {savedFor(detail.id) && (
                 <button

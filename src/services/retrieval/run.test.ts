@@ -68,4 +68,20 @@ describe("bounded retrieval run", () => {
     expect(searchForCurator.mock.calls[1][3].providers).toEqual(["met", "commons"]);
     expect(searchWebPages).not.toHaveBeenCalled();
   });
+  it("does not repeat the same four museum queries when no alternate wording exists", async () => {
+    searchForCurator.mockResolvedValue(empty());
+    const result = await runCuratorSearch({ ...args(), alternativeQueries: [],
+      settings: { ...defaultLibrary.settings, webSearch: false } });
+    expect(result.diagnostics.sourceCalls).toBe(4);
+    expect(result.queries).toEqual(["quiet landscape"]);
+    expect(searchForCurator).toHaveBeenCalledTimes(1);
+  });
+  it("does not immediately retry a rate-limited provider with an alternate query", async () => {
+    searchForCurator.mockResolvedValueOnce({ ...empty(), sourceStatuses: [
+      { provider: "met", state: "limited", candidateCount: 0, matchedCount: 0 },
+    ] }).mockResolvedValueOnce(empty());
+    const result = await runCuratorSearch({ ...args(), settings: { ...defaultLibrary.settings, webSearch: false } });
+    expect(result.diagnostics.sourceCalls).toBe(5);
+    expect(searchForCurator.mock.calls[1][3].providers).toEqual(["commons"]);
+  });
 });

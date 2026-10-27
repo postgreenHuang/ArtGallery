@@ -59,9 +59,10 @@ interface ChicagoRecord {
 }
 export function normalizeCleveland(record: ClevelandRecord): Artwork | null {
   const id = museumId("cleveland", record.id);
-  const thumb = record.images?.web?.url || "";
+  const thumb = record.images?.web?.url || record.images?.print?.url || "";
   const original = record.images?.print?.url || "";
-  if (!id || record.share_license_status !== "CC0" || !safeMuseumImage(thumb, "cleveland") || !safeMuseumImage(original, "cleveland")) return null;
+  if (!id || record.share_license_status !== "CC0" ||
+    (thumb && !safeMuseumImage(thumb, "cleveland")) || (original && !safeMuseumImage(original, "cleveland"))) return null;
   const artist = record.creators?.find((creator) => creator.role === "artist")?.description || record.creators?.[0]?.description;
   const source = `https://www.clevelandart.org/art/${encodeURIComponent(record.accession_number || String(record.id))}`;
   const culture = Array.isArray(record.culture) ? record.culture.join("; ") : record.culture;
@@ -81,12 +82,13 @@ export function normalizeCleveland(record: ClevelandRecord): Artwork | null {
 
 export function normalizeChicago(record: ChicagoRecord, iiifBase: string): Artwork | null {
   const id = museumId("chicago", record.id);
-  if (!id || !record.is_public_domain || !/^[a-f0-9-]{36}$/i.test(record.image_id || "") || iiifBase !== "https://www.artic.edu/iiif/2") return null;
-  const base = `${iiifBase}/${record.image_id}/full/`;
-  const thumb = `${base}600,/0/default.jpg`;
-  const medium = `${base}843,/0/default.jpg`;
-  const hd = `${base}1686,/0/default.jpg`;
-  const original = `${base}full/0/default.jpg`;
+  if (!id || !record.is_public_domain || (record.image_id && !/^[a-f0-9-]{36}$/i.test(record.image_id)) ||
+    (record.image_id && iiifBase !== "https://www.artic.edu/iiif/2")) return null;
+  const base = record.image_id ? `${iiifBase}/${record.image_id}/full/` : "";
+  const thumb = base ? `${base}600,/0/default.jpg` : "";
+  const medium = base ? `${base}843,/0/default.jpg` : "";
+  const hd = base ? `${base}1686,/0/default.jpg` : "";
+  const original = base ? `${base}full/0/default.jpg` : "";
   const source = `https://www.artic.edu/artworks/${record.id}`;
   const artist = plain(record.artist_display || record.artist_title) || "艺术家未标注";
   return {
@@ -106,7 +108,8 @@ export function normalizeChicago(record: ChicagoRecord, iiifBase: string): Artwo
 
 export function clevelandSearchParams(query: string, offset = 0, targetArtist?: string,
   filters: { type?: string; technique?: string } = {}): URLSearchParams {
-  const params = new URLSearchParams({ q: query.slice(0, 160), skip: String(offset), limit: "8", has_image: "1" });
+  const params = new URLSearchParams({ q: query.slice(0, 160), skip: String(offset), limit: "8" });
+  if (!targetArtist) params.set("has_image", "1");
   params.set("cc0", "");
   if (targetArtist) params.set("artists", targetArtist.slice(0, 120));
   // Watercolor may be catalogued as a painting or a drawing. Keep that query broad.
@@ -140,7 +143,7 @@ export async function searchMuseum(museum: Museum, query: string, offset = 0, si
     const params = clevelandSearchParams(query, offset, targetArtist, filters);
     const result = await museumApi(museum, params, signal) as { info?: { total?: number }; data?: ClevelandRecord[] };
     const records = Array.isArray(result.data) ? result.data : [];
-    return { artworks: records.map(normalizeCleveland).filter((art): art is Artwork => !!art), offset: offset + size < (result.info?.total || 0) ? offset + size : undefined };
+    return { artworks: records.map(normalizeCleveland).filter((art): art is Artwork => !!art && (!!targetArtist || !!art.thumb)), offset: offset + size < (result.info?.total || 0) ? offset + size : undefined };
   }
   const params = new URLSearchParams();
   params.set("q", query.slice(0, 160));
@@ -150,5 +153,5 @@ export async function searchMuseum(museum: Museum, query: string, offset = 0, si
   params.set("fields", "id,title,artist_display,artist_title,date_display,description,image_id,is_public_domain,credit_line,thumbnail,medium_display,classification_title,style_titles,subject_titles");
   const result = await museumApi(museum, params, signal) as { data?: ChicagoRecord[]; config?: { iiif_url?: string }; pagination?: { total?: number } };
   const records = Array.isArray(result.data) ? result.data : [];
-  return { artworks: records.map((record) => normalizeChicago(record, result.config?.iiif_url || "")).filter((art): art is Artwork => !!art), offset: offset + size < (result.pagination?.total || 0) ? offset + size : undefined };
+  return { artworks: records.map((record) => normalizeChicago(record, result.config?.iiif_url || "")).filter((art): art is Artwork => !!art && (!!targetArtist || !!art.thumb)), offset: offset + size < (result.pagination?.total || 0) ? offset + size : undefined };
 }
