@@ -1705,6 +1705,16 @@ export default function App() {
                 <button className={!easelGroup ? "selected" : ""} onClick={() => setEaselGroup("")}>全部作品</button>
                 {collectionGroups.map((group) => <button key={group} className={easelGroup === group ? "selected" : ""}
                   onClick={() => setEaselGroup(group)}>{group}</button>)}
+                {easelGroup && <button disabled={busy} onClick={() => {
+                  const examples = library.saved.filter((item) => item.collectionGroup === easelGroup).slice(0, 3);
+                  if (!examples.length) return;
+                  const clues = examples.map((item) => `《${item.artwork.title}》—${item.artwork.artist}${item.artwork.medium ? `（${item.artwork.medium}）` : ""}`).join("、");
+                  const requestText = library.settings.useAi
+                    ? `以我画架中“${easelGroup}”主题为线索，继续寻找相关但不重复的开放馆藏作品。参考收藏：${clues}。请避免只重复这些画家，也不要把主题名或私人笔记当成已核实的作品资料。`
+                    : `寻找与“${easelGroup}”相关的其他画家作品`;
+                  void send(requestText,
+                    undefined, examples[0].artwork);
+                }}>从此主题继续探索</button>}
                 {easelGroup && <button className="remove-group" onClick={() => {
                   if (!window.confirm(`移除“${easelGroup}”分组？作品仍会留在画架。`)) return;
                   setLibrary((current) => ({ ...current, saved: current.saved.map((item) => item.collectionGroup === easelGroup

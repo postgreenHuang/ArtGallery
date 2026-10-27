@@ -84,6 +84,9 @@ test("collection groups and private notes persist without owning the artwork", a
   await page.getByRole("button", { name: "查看馆藏资料 Unpictured Garden" }).click();
   await expect(page.getByLabel("私人笔记")).toHaveValue("颜色很安静");
   await page.getByRole("button", { name: "关闭作品详情" }).click();
+  await page.getByRole("button", { name: "从此主题继续探索" }).click();
+  await expect(page.getByRole("heading", { name: "寻找与“水边”相关的其他画家作品" })).toBeVisible();
+  await page.getByRole("button", { name: /我的画架/ }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "移除当前分组（保留作品）" }).click();
   await expect(page.getByRole("heading", { name: "Unpictured Garden", exact: true })).toBeVisible();
