@@ -58,6 +58,51 @@ const fixture = {
     },
   ],
 };
+test("collection groups and private notes persist without owning the artwork", async ({ page }) => {
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => route.fulfill({ json: { query: { pages: [] } } }));
+  await page.route("https://openaccess-api.clevelandart.org/**", (route) => route.fulfill({ json: {
+    info: { total: 1 }, data: [{ id: 9001, title: "Unpictured Garden", share_license_status: "CC0",
+      creators: [{ role: "artist", description: "Claude Monet" }], accession_number: "9001" }],
+  } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
+  await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("Claude Monet");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  const card = page.locator(".art-card").filter({ hasText: "Unpictured Garden" });
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "保存馆藏资料到画架" }).click();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await page.getByRole("button", { name: "查看馆藏资料 Unpictured Garden" }).click();
+  await page.getByLabel("主题分组").fill("水边");
+  await page.getByLabel("私人笔记").fill("颜色很安静");
+  await page.getByRole("button", { name: "保存画架整理" }).click();
+  await page.getByRole("button", { name: "关闭作品详情" }).click();
+  await page.reload();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await page.getByRole("button", { name: "水边", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Unpictured Garden", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "查看馆藏资料 Unpictured Garden" }).click();
+  await expect(page.getByLabel("私人笔记")).toHaveValue("颜色很安静");
+  await page.getByRole("button", { name: "关闭作品详情" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "移除当前分组（保留作品）" }).click();
+  await expect(page.getByRole("heading", { name: "Unpictured Garden", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "水边", exact: true })).toHaveCount(0);
+});
+test("an image collection opens the organizer without entering fullscreen", async ({ page }) => {
+  await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => route.fulfill({ json: { query: { pages: [fixture] } } }));
+  await page.route(/https:\/\/(thumb|upload)\.wikimedia\.org\//, (route) => route.fulfill({
+    contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+  }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Water lilies", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "加入画架", exact: true }).click();
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await page.getByRole("button", { name: "更多操作 Water lilies" }).click();
+  await page.getByRole("button", { name: "整理画架主题与笔记" }).click();
+  await expect(page.getByLabel("主题分组")).toBeVisible();
+  await expect(page.getByRole("button", { name: "退出全屏" })).toHaveCount(0);
+});
 test("exact artist search keeps a museum record without an image as a saveable source card", async ({ page }) => {
   await page.route("https://commons.wikimedia.org/w/api.php?**", (route) => route.fulfill({ json: { query: { pages: [] } } }));
   await page.route("https://openaccess-api.clevelandart.org/**", (route) => route.fulfill({ json: {

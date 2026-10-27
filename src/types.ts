@@ -116,6 +116,8 @@ export interface SavedArtwork {
   artwork: Artwork;
   savedAt: number;
   local: string;
+  collectionGroup?: string;
+  note?: string;
 }
 export interface Settings {
   baseUrl: string;

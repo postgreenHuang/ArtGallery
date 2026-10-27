@@ -351,6 +351,29 @@ function ArtCard({
     </article>
   );
 }
+function CollectionOrganizer({ saved, groups, onSave }: {
+  saved: SavedArtwork; groups: string[]; onSave: (group: string, note: string) => void;
+}) {
+  const [group, setGroup] = useState(saved.collectionGroup || "");
+  const [note, setNote] = useState(saved.note || "");
+  return <form className="collection-organizer" onSubmit={(event) => {
+    event.preventDefault();
+    onSave(group.trim().slice(0, 40), note.trim().slice(0, 500));
+  }}>
+    <h3>我的画架整理</h3>
+    <label>主题分组
+      <input list="saved-collection-groups" maxLength={40} value={group} onChange={(event) => setGroup(event.target.value)}
+        placeholder="例如：喜欢的风景" />
+    </label>
+    <datalist id="saved-collection-groups">{groups.map((name) => <option key={name} value={name} />)}</datalist>
+    <label>私人笔记
+      <textarea maxLength={500} value={note} onChange={(event) => setNote(event.target.value)}
+        placeholder="记下喜欢它的原因，只有你能在本机看到" />
+    </label>
+    <button className="secondary-button" type="submit">保存画架整理</button>
+  </form>;
+}
+
 export default function App() {
   const [library, setLibrary] = useState<Library>(
     structuredClone(defaultLibrary),
@@ -368,6 +391,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [editingCriteriaId, setEditingCriteriaId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [easelGroup, setEaselGroup] = useState("");
   const [historyKind, setHistoryKind] = useState<"inspiration" | "artwork">(
     "inspiration",
   );
@@ -633,6 +657,7 @@ export default function App() {
   }
   const savedFor = (id: number) =>
     library.saved.find((s) => s.artwork.id === id);
+  const collectionGroups = [...new Set(library.saved.map((item) => item.collectionGroup?.trim()).filter((name): name is string => !!name))].sort();
   function updateConversation(
     id: string,
     fn: (c: Conversation) => Conversation,
@@ -1676,11 +1701,22 @@ export default function App() {
                   onChange={(e) => setFilter(e.target.value)}
                 />
               </label>
+              {collectionGroups.length > 0 && <div className="collection-groups" aria-label="画架主题筛选">
+                <button className={!easelGroup ? "selected" : ""} onClick={() => setEaselGroup("")}>全部作品</button>
+                {collectionGroups.map((group) => <button key={group} className={easelGroup === group ? "selected" : ""}
+                  onClick={() => setEaselGroup(group)}>{group}</button>)}
+                {easelGroup && <button className="remove-group" onClick={() => {
+                  if (!window.confirm(`移除“${easelGroup}”分组？作品仍会留在画架。`)) return;
+                  setLibrary((current) => ({ ...current, saved: current.saved.map((item) => item.collectionGroup === easelGroup
+                    ? { ...item, collectionGroup: "" } : item) }));
+                  setEaselGroup("");
+                }}>移除当前分组（保留作品）</button>}
+              </div>}
               {library.saved.length ? (
                 cards(
                   library.saved
                     .filter((s) =>
-                      `${s.artwork.title} ${s.artwork.artist}`
+                      (!easelGroup || s.collectionGroup === easelGroup) && `${s.artwork.title} ${s.artwork.artist} ${s.note || ""}`
                         .toLowerCase()
                         .includes(filter.toLowerCase()),
                     )
@@ -2136,6 +2172,11 @@ export default function App() {
             {savedFor(context.art.id) ? "已在我的画架" : "加入我的画架"}
           </button>
           {savedFor(context.art.id) && (
+            <button onClick={() => { viewArtwork(context.art); setContext(null); }}>
+              <FolderOpen size={16} /> 整理画架主题与笔记
+            </button>
+          )}
+          {savedFor(context.art.id) && (
             <button
               className="danger"
               onClick={() => {
@@ -2248,6 +2289,12 @@ export default function App() {
                   </>
                 )}
               </dl>
+              {savedFor(detail.id) && <CollectionOrganizer key={detail.id} saved={savedFor(detail.id)!}
+                groups={collectionGroups} onSave={(group, note) => {
+                  setLibrary((current) => ({ ...current, saved: current.saved.map((item) => item.artwork.id === detail.id
+                    ? { ...item, collectionGroup: group, note } : item) }));
+                  setToast("画架主题与笔记已保存");
+                }} />}
               <button
                 className="primary-button"
                 onClick={() => void save(detail)}

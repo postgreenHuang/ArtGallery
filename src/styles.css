@@ -825,6 +825,25 @@ main {
   flex: 1;
   font-size: 12px;
 }
+.collection-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 24px;
+}
+.collection-groups button {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 7px 12px;
+  color: var(--green);
+  background: transparent;
+  font-size: 11px;
+}
+.collection-groups button.selected {
+  background: var(--green);
+  color: #fff;
+}
+.collection-groups button.remove-group { margin-left: auto; }
 .empty-state {
   text-align: center;
   padding: 40px 24px;
@@ -1628,6 +1647,27 @@ main {
   color: #7a886a;
   overflow-wrap: anywhere;
 }
+.collection-organizer {
+  display: grid;
+  gap: 11px;
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+}
+.collection-organizer h3 { margin: 0; font-size: 14px; color: var(--green); }
+.collection-organizer label { display: grid; gap: 6px; font-size: 11px; color: var(--green); }
+.collection-organizer input,
+.collection-organizer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.collection-organizer textarea { min-height: 80px; resize: vertical; }
 .primary-button,
 .secondary-button {
   display: inline-flex;

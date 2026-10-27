@@ -63,7 +63,7 @@ describe("independent museum collections", () => {
     try {
       const previews: string[] = [];
       const result = await searchAcrossProviders("Monet", "google", new AbortController().signal, undefined, {},
-        (artworks) => { previews.push(...artworks.map((art) => art.provider)); });
+        (artworks) => { previews.push(...artworks.map((art) => art.provider || "commons")); });
       expect(result.artworks.map((art) => art.provider)).toEqual(["cleveland", "chicago"]);
       expect(previews.sort()).toEqual(["chicago", "cleveland"]);
       expect(result.warning).toContain("部分馆藏");
