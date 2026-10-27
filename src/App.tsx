@@ -579,7 +579,7 @@ export default function App() {
     }
     void refreshDiscovery();
     return () => discoverRequest.current?.abort();
-  }, [ready, library.settings.scope]);
+  }, [ready, library.settings.scope, library.settings.discoveryRanking]);
   async function refreshDiscovery() {
     discoverRequest.current?.abort();
     const controller = new AbortController();
@@ -597,6 +597,7 @@ export default function App() {
         discoverArtistSeen.current,
         discoverCultureSeen.current,
         discoverTypeSeen.current,
+        library.settings.discoveryRanking !== false,
       );
       if (controller.signal.aborted) return;
       if (!result.artworks.length) {
@@ -2651,6 +2652,10 @@ function SettingsDialog({
                 <option value="google">Google Art Project（默认）</option>
                 <option value="commons">全部 Wikimedia Commons</option>
               </select>
+            </label>
+            <label className="toggle-row">
+              <span>优先发现新作品 <small>优先展示未见过的作者、文化和作品类型；关闭后按馆藏返回顺序展示。</small></span>
+              <input type="checkbox" checked={draft.discoveryRanking !== false} onChange={(e) => setDraft({ ...draft, discoveryRanking: e.target.checked })} />
             </label>
             <label>
               界面主题

@@ -477,12 +477,15 @@ test("clear light and warm paper themes save and render distinct palettes", asyn
   await expect(page.locator("html")).toHaveAttribute("data-theme", "contrast");
   await page.getByRole("button", { name: /偏好与资料库/ }).click();
   await page.getByLabel("界面主题").selectOption("warm");
+  await page.getByLabel("优先发现新作品").uncheck();
   await page.getByRole("button", { name: "保存偏好" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "warm");
   await expect(page.locator(".sidebar")).toHaveCSS("background-color", "rgb(236, 223, 202)");
   await page.screenshot({ path: "test-results/warm-paper-theme.png", fullPage: true });
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "warm");
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await expect(page.getByLabel("优先发现新作品")).not.toBeChecked();
 });
 test("search, thumbnail-first, collect, reload offline, history and settings", async ({
   page,

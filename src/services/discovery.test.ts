@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Artwork } from "../types";
-import { discoveryCoverage, discoveryProviderOrder, discoveryRateLimited, rankDiscoveryCandidates } from "./discovery";
+import { discoveryCoverage, discoveryProviderOrder, discoveryRateLimited, rankDiscoveryCandidates, sourceOrderDiscoveryCandidates } from "./discovery";
 
 const art = (id: number, artist: string, culture?: string, objectType?: string, provider: Artwork["provider"] = "chicago"): Artwork => ({
   id, provider, file: String(id), title: `Work ${id}`, artist, date: "", description: "", thumb: "", original: "", source: "https://example.org",
@@ -38,5 +38,10 @@ describe("discovery diversity", () => {
     const duplicate = { ...current, id: 20, provider: "met" as const };
     expect(rankDiscoveryCandidates([duplicate, art(21, "Bea")], { selected: [current], seenIds: new Set(),
       seenArtists: new Set(), seenCultures: new Set(), seenTypes: new Set(), previousIds: [] }).map((item) => item.id)).toEqual([21]);
+  });
+  it("can preserve source order without showing the same work twice in one group", () => {
+    const chosen = art(10, "Ada", "China", "Drawing");
+    expect(sourceOrderDiscoveryCandidates([art(1, "Familiar"), { ...chosen, id: 20, provider: "met" }, art(2, "Novel")], [chosen])
+      .map((item) => item.id)).toEqual([1, 2]);
   });
 });

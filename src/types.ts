@@ -125,6 +125,7 @@ export interface Settings {
   theme: "light" | "contrast" | "warm" | "dark" | "system";
   explanationFontSize: number;
   webSearch?: boolean;
+  discoveryRanking?: boolean;
 }
 export interface Library {
   version: 1;
@@ -144,6 +145,7 @@ export const defaultLibrary: Library = {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
     useAi: false,
+    discoveryRanking: true,
     scope: "google",
     theme: "light",
     explanationFontSize: 16,

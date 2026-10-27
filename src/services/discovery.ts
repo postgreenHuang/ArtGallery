@@ -88,6 +88,12 @@ export function rankDiscoveryCandidates(candidates: Artwork[], context: {
     }).sort((a, b) => b.score - a.score || a.art.id - b.art.id).map(({ art }) => art);
 }
 
+export function sourceOrderDiscoveryCandidates(candidates: Artwork[], selected: Artwork[]): Artwork[] {
+  const ids = new Set(selected.map((art) => art.id));
+  const works = new Set(selected.map(workKey).filter(Boolean));
+  return candidates.filter((art) => !ids.has(art.id) && (!workKey(art) || !works.has(workKey(art))));
+}
+
 export function discoveryCoverage(artworks: Artwork[], seenArtists: ReadonlySet<string>, seenCultures: ReadonlySet<string>, seenTypes: ReadonlySet<string>): DiscoveryCoverage {
   const artists = new Set<string>(), cultures = new Set<string>(), types = new Set<string>();
   let unknownCulture = 0, unknownType = 0;
@@ -116,6 +122,7 @@ export async function discoverArt(
   seenIds: ReadonlySet<number>, offsets: Record<string, number>, signal: AbortSignal,
   seenArtists: ReadonlySet<string> = new Set(),
   seenCultures: ReadonlySet<string> = new Set(), seenTypes: ReadonlySet<string> = new Set(),
+  rankNovelty = true,
 ): Promise<{ artworks: Artwork[]; artists: string[]; offsets: Record<string, number>; warning: string; coverage: DiscoveryCoverage; sourceCalls: number }> {
   const topics = chooseDiscoveryTopics(previousTopics);
   const artworks: Artwork[] = [];
@@ -136,8 +143,15 @@ export async function discoverArt(
         const result = await searchProvider(provider, topic.query, scope, offsets[key] || 0, signal);
         // An exhausted cursor stays exhausted across refreshes; 0 would replay page one.
         nextOffsets[key] = result.offset ?? -1;
-        const ranked = rankDiscoveryCandidates(result.artworks, { selected: artworks, seenIds, seenArtists,
-          seenCultures, seenTypes, previousIds });
+        const ranked = rankNovelty
+          ? rankDiscoveryCandidates(result.artworks, { selected: artworks, seenIds, seenArtists,
+            seenCultures, seenTypes, previousIds })
+          : sourceOrderDiscoveryCandidates(result.artworks, artworks);
+        if (!rankNovelty && ranked[0]) {
+          artworks.push({ ...ranked[0], selectionReason: `从“${topic.label}”主题按馆藏返回顺序展示；多样性排序已关闭。` });
+          selected = true;
+          break;
+        }
         const novel = ranked.filter((art) => !seenIds.has(art.id) &&
           (!knownArtist(art) || !seenArtists.has(artistKey(art))) &&
           (!knownArtist(art) || !artworks.some((current) => artistKey(current) === artistKey(art))));
