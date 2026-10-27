@@ -160,6 +160,63 @@ test("corrupt desktop library offers explicit backup recovery before reopening",
   await page.getByRole("button", { name: "重新加载" }).click();
   await expect(page.getByRole("button", { name: /发现艺术/ })).toBeVisible();
 });
+test("desktop settings show Brave usage and saved art downloads when idle", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-10-27T12:00:00+08:00") });
+  await page.addInitScript((artwork) => {
+    const state = window as any;
+    state.isTauri = true;
+    state.__calls = [];
+    let library = { version: 1, conversations: [], viewed: [], saved: [{ artwork, local: "", savedAt: Date.now() }] };
+    state.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" } },
+      transformCallback: () => 1,
+      unregisterCallback: () => {},
+      invoke: async (command: string, args: any) => {
+        state.__calls.push({ command, args });
+        if (command === "load_library") return JSON.stringify(library);
+        if (command === "save_library") { library = JSON.parse(args.data); return null; }
+        if (command === "commons_query") return { query: { pages: [] } };
+        if (command === "museum_query") return { info: { total: 0 }, data: [] };
+        if (command === "met_query") return { total: 0, objectIDs: [] };
+        if (command === "cached_image") return null;
+        if (command === "cache_image") return "collection/originals/101.jpg";
+        if (command === "brave_usage") return { month: "2026-10", web: 3, images: 2, history: { "2026-10": { web: 3, images: 2 } } };
+        if (command === "has_api_key") return false;
+        if (command === "library_directory") return "C:\\Gallery";
+        return null;
+      },
+    };
+  }, { id: 101, file: "File:Water lilies.jpg", title: "Water lilies", artist: "Claude Monet", date: "1916",
+    description: "", thumb: "https://thumb.wikimedia.org/preview.jpg", original: "https://upload.wikimedia.org/original.jpg",
+    source: "https://commons.wikimedia.org/wiki/File:Water_lilies.jpg", width: 9000, height: 6000, license: "Public domain", licenseUrl: "", attribution: "" });
+  await page.goto("/");
+  await page.getByRole("button", { name: /我的画架/ }).click();
+  await expect(page.getByText("1 幅原图待下载 · 闲时自动继续")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "cache_image" && call.args.variant === "collection"))).toHaveLength(0);
+  await page.getByRole("button", { name: /偏好与资料库/ }).click();
+  await expect(page.getByText("网页 3 次 · 图片 2 次 · 合计 5 次")).toBeVisible();
+  await page.getByRole("checkbox", { name: /启用 Brave 搜索/ }).check();
+  await page.getByRole("button", { name: "保存偏好" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__calls.some((call: any) =>
+    call.command === "save_library" && JSON.parse(call.args.data).settings.webSearch === true))).toBe(true);
+  await page.clock.fastForward(13_000);
+  await expect(page.getByRole("button", { name: "已在画架 · 原图" })).toBeVisible();
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(calls.some((call: any) => call.command === "cache_image" && call.args.variant === "collection")).toBe(true);
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click({ button: "right" });
+  await expect(page.getByRole("button", { name: "打开本地文件所在位置" })).toBeVisible();
+  await page.getByRole("button", { name: "打开本地文件所在位置" }).click();
+  expect(await page.evaluate(() => (window as any).__calls.some((call: any) =>
+    call.command === "reveal_artwork_file" && call.args.relative === "collection/originals/101.jpg"))).toBe(true);
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click({ button: "right" });
+  await page.getByRole("button", { name: "设为 Windows 桌面壁纸" }).click();
+  expect(await page.evaluate(() => (window as any).__calls.some((call: any) =>
+    call.command === "set_artwork_wallpaper" && call.args.relative === "collection/originals/101.jpg"))).toBe(true);
+  await page.getByRole("button", { name: "欣赏 Water lilies" }).click();
+  await page.locator(".viewer-canvas").click({ button: "right" });
+  await expect(page.getByRole("button", { name: "打开本地文件所在位置" })).toBeVisible();
+  await page.getByRole("button", { name: "退出全屏" }).click();
+});
 test("fullscreen browses artworks from the same search result", async ({ page }) => {
   const second = {
     ...fixture,
@@ -343,7 +400,7 @@ test("original download rate limit explains retry while thumbnails stay visible"
   await page.reload();
   await page.getByRole("button", { name: /我的画架/ }).click();
   await expect(page.getByRole("heading", { name: "Water lilies" })).toBeVisible();
-  await expect(page.getByText("原图待下载 · 点击书签重试")).toBeVisible();
+  await expect(page.getByText("原图待下载 · 闲时自动重试，点击书签立即下载")).toBeVisible();
   allowOriginal = true;
   await page.getByRole("button", { name: "重试下载原图" }).click();
   await expect(page.getByRole("button", { name: "已在画架 · 原图" })).toBeVisible();

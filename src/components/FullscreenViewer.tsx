@@ -36,6 +36,7 @@ export default function FullscreenViewer({
   onNext,
   onClose,
   onSave,
+  onContextMenu,
 }: {
   art: Artwork;
   saved?: SavedArtwork;
@@ -47,6 +48,7 @@ export default function FullscreenViewer({
   onNext: () => void;
   onClose: () => void;
   onSave: () => void;
+  onContextMenu?: (x: number, y: number) => void;
 }) {
   const [source, setSource] = useState({
     url: art.thumb,
@@ -484,6 +486,10 @@ export default function FullscreenViewer({
       <div
         ref={canvas}
         className="viewer-canvas"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onContextMenu?.(event.clientX, event.clientY);
+        }}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();

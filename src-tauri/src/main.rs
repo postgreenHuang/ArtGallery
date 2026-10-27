@@ -1,5 +1,5 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
-use std::{collections::{HashMap, HashSet}, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, HashMap, HashSet}, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
 use tauri::{Emitter, Manager, State};
 use serde_json::{Value, json};
 use fs2::FileExt;
@@ -7,7 +7,39 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::io::AsyncWriteExt;
 
 struct LibraryState { root: PathBuf, last: Option<String> }
-struct AppState { library: Mutex<LibraryState>, client: reqwest::Client, downloads: tokio::sync::Semaphore, chicago_downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>>, query_cooldown: Mutex<Option<Instant>>, image_cooldown: Mutex<Option<Instant>>, museum_cooldowns: Mutex<HashMap<String,Instant>>, query_pacing: tokio::sync::Mutex<Instant>, museum_pacing: tokio::sync::Mutex<Instant>, chicago_image_pacing: tokio::sync::Mutex<Instant> }
+struct AppState { library: Mutex<LibraryState>, brave_usage_lock: Mutex<()>, client: reqwest::Client, downloads: tokio::sync::Semaphore, chicago_downloads: tokio::sync::Semaphore, original_cooldown: Mutex<Option<Instant>>, query_cooldown: Mutex<Option<Instant>>, image_cooldown: Mutex<Option<Instant>>, museum_cooldowns: Mutex<HashMap<String,Instant>>, query_pacing: tokio::sync::Mutex<Instant>, museum_pacing: tokio::sync::Mutex<Instant>, chicago_image_pacing: tokio::sync::Mutex<Instant> }
+#[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
+struct BraveMonth { web: u64, images: u64 }
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct BraveUsage { months: BTreeMap<String, BraveMonth> }
+#[derive(serde::Serialize)]
+struct BraveUsageSummary { month: String, web: u64, images: u64, history: BTreeMap<String, BraveMonth> }
+fn brave_month() -> String { chrono::Local::now().format("%Y-%m").to_string() }
+fn read_brave_usage(root: &Path) -> Result<BraveUsage,String> {
+    read_optional(&root.join("brave-usage.json"))?.map(|data|serde_json::from_str(&data).map_err(err)).unwrap_or_else(||Ok(BraveUsage::default()))
+}
+fn brave_usage_summary(root: &Path) -> Result<BraveUsageSummary,String> {
+    let history=read_brave_usage(root)?.months;
+    let month=brave_month();
+    let current=history.get(&month).cloned().unwrap_or_default();
+    Ok(BraveUsageSummary{month,web:current.web,images:current.images,history})
+}
+fn count_brave_request(state:&AppState,kind:&str)->Result<(),String>{
+    let root=state.library.lock().map_err(err)?.root.clone();
+    let _guard=state.brave_usage_lock.lock().map_err(err)?;
+    let lock=fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".brave-usage.lock")).map_err(err)?;
+    lock.lock_exclusive().map_err(err)?;
+    let mut usage=read_brave_usage(&root)?;
+    let month=usage.months.entry(brave_month()).or_default();
+    match kind {"web"=>month.web=month.web.saturating_add(1),"images"=>month.images=month.images.saturating_add(1),_=>return Err("未知 Brave 请求类型".into())}
+    atomic_write(&root.join("brave-usage.json"),serde_json::to_string_pretty(&usage).map_err(err)?.as_bytes())
+}
+#[tauri::command]
+fn brave_usage(state:State<AppState>)->Result<BraveUsageSummary,String>{
+    let root=state.library.lock().map_err(err)?.root.clone();
+    let _guard=state.brave_usage_lock.lock().map_err(err)?;
+    brave_usage_summary(&root)
+}
 fn err(e: impl std::fmt::Display) -> String { e.to_string() }
 fn check_cooldown(until:&Mutex<Option<Instant>>,label:&str)->Result<(),String>{
     let deadline=until.lock().map_err(err)?;
@@ -106,6 +138,8 @@ fn copy_library(s:&LibraryState,target:&Path)->Result<(),String>{
     for directory in IMAGE_DIRS {copy_tree(&s.root.join(directory),&target.join(directory))?;}
     if let Some(ref data)=s.last {atomic_write(&target.join("library.json"),data.as_bytes())?;}
     if let Some(backup)=read_optional(&s.root.join("library.backup.json"))? {atomic_write(&target.join("library.backup.json"),backup.as_bytes())?;}
+    if let Some(usage)=read_optional(&s.root.join("brave-usage.json"))? {atomic_write(&target.join("brave-usage.json"),usage.as_bytes())?;}
+    copy_tree(&s.root.join("wallpapers"),&target.join("wallpapers"))?;
     Ok(())
 }
 #[tauri::command]
@@ -202,6 +236,7 @@ async fn met_query(path:String,state:State<'_,AppState>)->Result<Value,String>{
 async fn web_image_search(query:String,state:State<'_,AppState>)->Result<Value,String>{
     if query.trim().is_empty()||query.len()>1000{return Err("无效的搜图词".into())}
     let secret=credential("https://api.search.brave.com")?.get_password().map_err(|_|"请先在偏好中保存 Brave Search API Key".to_string())?;
+    count_brave_request(&state,"images")?;
     let response=state.client.get("https://api.search.brave.com/res/v1/images/search")
         .query(&[("q",query.as_str()),("count","20"),("spellcheck","false"),("safesearch","off")])
         .header("X-Subscription-Token",secret).timeout(Duration::from_secs(30)).send().await
@@ -213,6 +248,7 @@ async fn web_image_search(query:String,state:State<'_,AppState>)->Result<Value,S
 async fn web_page_search(query:String,state:State<'_,AppState>)->Result<Value,String>{
     if query.trim().is_empty()||query.len()>400||query.split_whitespace().count()>50{return Err("无效的网页检索词".into())}
     let secret=credential("https://api.search.brave.com")?.get_password().map_err(|_|"请先在偏好中保存 Brave Search API Key".to_string())?;
+    count_brave_request(&state,"web")?;
     let response=state.client.get("https://api.search.brave.com/res/v1/web/search")
         .query(&[("q",query.as_str()),("count","10"),("safesearch","moderate")])
         .header("X-Subscription-Token",secret).timeout(Duration::from_secs(30)).send().await
@@ -368,9 +404,54 @@ async fn cache_image(id:u64,url:String,variant:String,app:tauri::AppHandle,state
 }
 #[tauri::command]
 fn image_path(relative:String,state:State<AppState>)->Result<String,String>{
-    let s=state.library.lock().map_err(err)?;let p=s.root.join(&relative).canonicalize().map_err(err)?;
-    let permitted=IMAGE_DIRS.iter().any(|directory|s.root.join(directory).canonicalize().is_ok_and(|base|p.starts_with(base)));
-    if !permitted||!p.is_file(){return Err("无效的本地图片路径".into())}Ok(webview_path(&p))
+    let s=state.library.lock().map_err(err)?;
+    Ok(webview_path(&resolve_image_path(&s.root,&relative)?))
+}
+fn resolve_image_path(root:&Path,relative:&str)->Result<PathBuf,String>{
+    let supplied=Path::new(relative);
+    if supplied.is_absolute()||supplied.components().any(|part|!matches!(part,std::path::Component::Normal(_))){return Err("无效的本地图片路径".into())}
+    let path=root.join(supplied).canonicalize().map_err(|_|"本地图片尚未下载".to_string())?;
+    let permitted=IMAGE_DIRS.iter().any(|directory|root.join(directory).canonicalize().is_ok_and(|base|path.starts_with(base)));
+    if !permitted||!path.is_file(){return Err("无效的本地图片路径".into())}
+    Ok(path)
+}
+#[tauri::command]
+fn reveal_artwork_file(relative:String,state:State<AppState>)->Result<(),String>{
+    let root=state.library.lock().map_err(err)?.root.clone();
+    let path=resolve_image_path(&root,&relative)?;
+    #[cfg(target_os="windows")]
+    std::process::Command::new("explorer.exe").arg("/select,").arg(webview_path(&path)).spawn().map_err(err)?;
+    #[cfg(target_os="macos")]
+    std::process::Command::new("open").arg("-R").arg(path).spawn().map_err(err)?;
+    #[cfg(all(not(target_os="windows"),not(target_os="macos")))]
+    std::process::Command::new("xdg-open").arg(path.parent().ok_or("图片目录不存在")?).spawn().map_err(err)?;
+    Ok(())
+}
+#[tauri::command]
+fn set_artwork_wallpaper(relative:String,state:State<AppState>)->Result<(),String>{
+    let root=state.library.lock().map_err(err)?.root.clone();
+    let source=resolve_image_path(&root,&relative)?;
+    #[cfg(target_os="windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let extension=source.extension().and_then(|value|value.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !matches!(extension.as_str(),"jpg"|"png"){return Err("Windows 壁纸需要 JPG 或 PNG 图片；此作品的本地版本暂不支持".into())}
+        let directory=root.join("wallpapers");
+        fs::create_dir_all(&directory).map_err(err)?;
+        let unique=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_nanos();
+        let destination=directory.join(format!("wallpaper-{unique}.{extension}"));
+        fs::copy(source,&destination).map_err(err)?;
+        let path=webview_path(&destination);
+        let mut wide:Vec<u16>=std::ffi::OsStr::new(&path).encode_wide().chain(std::iter::once(0)).collect();
+        #[link(name="user32")]
+        extern "system" {fn SystemParametersInfoW(action:u32,param:u32,value:*mut std::ffi::c_void,flags:u32)->i32;}
+        // SPI_SETDESKWALLPAPER with profile persistence and a shell refresh.
+        let applied=unsafe{SystemParametersInfoW(0x0014,0,wide.as_mut_ptr().cast(),0x01|0x02)};
+        if applied==0{let _=fs::remove_file(&destination);return Err(format!("设置壁纸失败：{}",std::io::Error::last_os_error()))}
+        Ok(())
+    }
+    #[cfg(not(target_os="windows"))]
+    {let _=source;Err("设置桌面壁纸目前仅支持 Windows".into())}
 }
 fn webview_path(path:&std::path::Path)->String{
     let full=path.to_string_lossy();
@@ -493,8 +574,8 @@ fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init(
     let root:PathBuf=if pointer.exists(){let configured:PathBuf=serde_json::from_str(&fs::read_to_string(&pointer)?)?;if configured.is_dir(){configured}else{recover_library_location(&pointer,&configured,&default)?}}else{default};
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
-    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_backup_summary,restore_library_backup,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,wikidata_artist_search,read_source_page,cached_image,cache_image,image_path,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
+    app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),brave_usage_lock:Mutex::new(()),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_backup_summary,restore_library_backup,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,brave_usage,wikidata_artist_search,read_source_page,cached_image,cache_image,image_path,reveal_artwork_file,set_artwork_wallpaper,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
     if let Err(error)=result{if !error.to_string().contains("资料库恢复已取消"){
         rfd::MessageDialog::new().set_title("拾色启动失败").set_level(rfd::MessageLevel::Error).set_description(error.to_string()).show();
     }}
@@ -502,6 +583,25 @@ fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init(
 
 #[cfg(test)]
 mod tests {use super::*;
+    #[test]fn brave_usage_counts_requests_by_month_and_survives_reload(){
+        let root=fixture().root;
+        let state=AppState{library:Mutex::new(LibraryState{root:root.clone(),last:None}),brave_usage_lock:Mutex::new(()),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())};
+        count_brave_request(&state,"web").unwrap();count_brave_request(&state,"images").unwrap();count_brave_request(&state,"web").unwrap();
+        let summary=brave_usage_summary(&root).unwrap();
+        assert_eq!((summary.web,summary.images),(2,1));
+        assert_eq!(summary.history.get(&summary.month).unwrap().web,2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn local_image_actions_reject_paths_outside_library(){
+        let state=fixture();
+        let image=state.root.join("collection/originals/7.jpg");
+        fs::create_dir_all(image.parent().unwrap()).unwrap();fs::write(&image,b"image").unwrap();
+        assert_eq!(resolve_image_path(&state.root,"collection/originals/7.jpg").unwrap(),image.canonicalize().unwrap());
+        assert!(resolve_image_path(&state.root,"../outside.jpg").is_err());
+        assert!(resolve_image_path(&state.root,"library.json").is_err());
+        assert!(resolve_image_path(&state.root,"collection/originals/missing.jpg").is_err());
+        fs::remove_dir_all(state.root).unwrap();
+    }
     #[test]fn recovered_location_keeps_original_pointer(){
         let state=fixture();
         let pointer=state.root.join("location.json");
@@ -531,7 +631,7 @@ mod tests {use super::*;
         assert!(ai_text(&json!({"choices":[{"message":{"content":null,"reasoning_content":"private"}}]})).unwrap_err().contains("没有可用正文"));
     }
     #[test]fn original_rate_limit_waits_without_blocking_local_reads(){
-        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())};
+        let state=AppState{library:Mutex::new(LibraryState{root:PathBuf::new(),last:None}),brave_usage_lock:Mutex::new(()),client:reqwest::Client::new(),downloads:tokio::sync::Semaphore::new(1),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())};
         assert!(check_original_cooldown(&state).is_ok());
         *state.original_cooldown.lock().unwrap()=Some(Instant::now()+Duration::from_secs(90));
         assert!(check_original_cooldown(&state).unwrap_err().contains("2 分钟"));
@@ -593,7 +693,19 @@ mod tests {use super::*;
     }
     fn data(label:&str)->String{json!({"version":1,"conversations":[],"saved":[],"label":label}).to_string()}
     #[test]fn backup_and_conflict_protection(){let mut s=fixture();save_snapshot(&mut s,data("first")).unwrap();save_snapshot(&mut s,data("second")).unwrap();assert_eq!(fs::read_to_string(s.root.join("library.backup.json")).unwrap(),data("first"));fs::write(s.root.join("library.json"),data("remote")).unwrap();assert!(save_snapshot(&mut s,data("local")).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("remote"));fs::remove_dir_all(s.root).unwrap();}
-    #[test]fn migration_copies_images_and_keeps_source(){let mut s=fixture();let t=fixture();fs::remove_dir(t.root.join("images")).unwrap();save_snapshot(&mut s,data("collection")).unwrap();fs::write(s.root.join("images/1.jpg"),b"image fixture").unwrap();copy_library(&s,&t.root).unwrap();assert_eq!(fs::read(t.root.join("images/1.jpg")).unwrap(),b"image fixture");assert!(s.root.join("library.json").exists());assert!(copy_library(&s,&t.root).is_err());fs::remove_dir_all(s.root).unwrap();fs::remove_dir_all(t.root).unwrap();}
+    #[test]fn migration_copies_images_and_keeps_source(){
+        let mut s=fixture();let t=fixture();fs::remove_dir(t.root.join("images")).unwrap();
+        save_snapshot(&mut s,data("collection")).unwrap();
+        fs::write(s.root.join("images/1.jpg"),b"image fixture").unwrap();
+        fs::write(s.root.join("brave-usage.json"),r#"{"months":{"2026-10":{"web":2,"images":1}}}"#).unwrap();
+        fs::create_dir_all(s.root.join("wallpapers")).unwrap();fs::write(s.root.join("wallpapers/wallpaper.jpg"),b"wallpaper").unwrap();
+        copy_library(&s,&t.root).unwrap();
+        assert_eq!(fs::read(t.root.join("images/1.jpg")).unwrap(),b"image fixture");
+        assert_eq!(fs::read(t.root.join("wallpapers/wallpaper.jpg")).unwrap(),b"wallpaper");
+        assert_eq!(read_brave_usage(&t.root).unwrap().months["2026-10"].web,2);
+        assert!(s.root.join("library.json").exists());assert!(copy_library(&s,&t.root).is_err());
+        fs::remove_dir_all(s.root).unwrap();fs::remove_dir_all(t.root).unwrap();
+    }
     #[test]fn malformed_data_does_not_replace_library(){let mut s=fixture();save_snapshot(&mut s,data("good")).unwrap();assert!(save_snapshot(&mut s,"{}".into()).is_err());assert_eq!(fs::read_to_string(s.root.join("library.json")).unwrap(),data("good"));fs::remove_dir_all(s.root).unwrap();}
     #[test]fn explicit_backup_recovery_archives_corrupt_original(){
         let mut s=fixture();save_snapshot(&mut s,data("original")).unwrap();save_snapshot(&mut s,data("recoverable")).unwrap();

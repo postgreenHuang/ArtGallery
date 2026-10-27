@@ -1241,7 +1241,9 @@ main {
 }
 .context-menu {
   position: fixed;
-  z-index: 70;
+  z-index: 140;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
   background: #fffef9;
   box-shadow: 0 8px 35px #323e2a25;
   border: 1px solid #dedfd4;
@@ -1249,6 +1251,17 @@ main {
   border-radius: 5px;
   width: 236px;
 }
+.brave-usage {
+  display: grid;
+  gap: 6px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--green);
+  font-size: 12px;
+}
+.brave-usage small { line-height: 1.5; opacity: .75; }
+.brave-usage details p { margin: 6px 0; }
 .context-menu button,
 .context-menu a {
   display: flex;

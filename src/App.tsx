@@ -88,6 +88,12 @@ const isOriginalLocal = (local?: string) =>
     local.endsWith(":collection"));
 const fullImageLabel = (art: Artwork) => art.provider === "cleveland" ? "馆方高清 JPEG" : "原图";
 const hasArtworkImage = (art: Artwork) => !!(art.thumb || art.medium || art.hd || art.original);
+interface BraveUsageSummary {
+  month: string;
+  web: number;
+  images: number;
+  history: Record<string, { web: number; images: number }>;
+}
 
 const prompts = [
   {
@@ -294,7 +300,7 @@ function ArtCard({
         <div>
           <p>{art.artist.slice(0, 100)}</p>
           <h3 title={art.title}>{art.title}</h3>
-          {saved && !originalSaved && art.original && <small className="art-pending">{fullImageLabel(art)}待下载 · 点击书签重试</small>}
+          {saved && !originalSaved && art.original && <small className="art-pending">{fullImageLabel(art)}待下载 · 闲时自动重试，点击书签立即下载</small>}
         </div>
         <button
           className={`icon-button save ${saved ? "is-saved" : ""}`}
@@ -410,6 +416,10 @@ export default function App() {
   const [phase, setPhase] = useState("");
   const request = useRef<AbortController | null>(null);
   const [saving, setSaving] = useState<number[]>([]);
+  const collectionActive = useRef(new Set<number>());
+  const collectionRetryAt = useRef(new Map<number, { at: number; failures: number }>());
+  const lastInteraction = useRef(Date.now());
+  const [collectionStatus, setCollectionStatus] = useState("");
   const [detail, setDetail] = useState<Artwork | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [floatingArtworkOpen, setFloatingArtworkOpen] = useState(false);
@@ -469,6 +479,28 @@ export default function App() {
     const t = setTimeout(() => setToast(""), 5000);
     return () => clearTimeout(t);
   }, [toast]);
+  useEffect(() => {
+    const mark = () => { lastInteraction.current = Date.now(); };
+    for (const event of ["pointerdown", "keydown", "wheel"])
+      window.addEventListener(event, mark, { passive: true });
+    return () => {
+      for (const event of ["pointerdown", "keydown", "wheel"])
+        window.removeEventListener(event, mark);
+    };
+  }, []);
+  useEffect(() => {
+    if (!ready || !desktop || persistError) return;
+    const check = () => {
+      if (busy || collectionActive.current.size || !navigator.onLine || Date.now() - lastInteraction.current < 12_000) return;
+      const now = Date.now();
+      const next = [...library.saved].reverse().find((item) => item.artwork.original && !isOriginalLocal(item.local) &&
+        (collectionRetryAt.current.get(item.artwork.id)?.at || 0) <= now);
+      if (next) void downloadCollectionOriginal(next.artwork, true);
+    };
+    const timer = window.setInterval(check, 4000);
+    check();
+    return () => window.clearInterval(timer);
+  }, [ready, busy, persistError, library.saved]);
   useEffect(() => {
     const close = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !document.querySelector(".fullscreen-viewer")) {
@@ -656,6 +688,7 @@ export default function App() {
   }
   const savedFor = (id: number) =>
     library.saved.find((s) => s.artwork.id === id);
+  const pendingOriginals = library.saved.filter((item) => item.artwork.original && !isOriginalLocal(item.local)).length;
   const collectionGroups = [...new Set(library.saved.map((item) => item.collectionGroup?.trim()).filter((name): name is string => !!name))].sort();
   function updateConversation(
     id: string,
@@ -1151,6 +1184,31 @@ export default function App() {
       }
     }
   }
+  async function downloadCollectionOriginal(art: Artwork, background = false) {
+    if (!art.original || collectionActive.current.has(art.id)) return;
+    collectionActive.current.add(art.id);
+    setSaving((current) => [...current, art.id]);
+    if (background) setCollectionStatus(`闲时下载中：${art.title}`);
+    try {
+      const local = await cacheArtwork(art.id, art.original, "collection");
+      setLibrary((current) => ({ ...current, saved: current.saved.map((item) =>
+        item.artwork.id === art.id ? { ...item, artwork: art, local } : item) }));
+      collectionRetryAt.current.delete(art.id);
+      setHd((current) => { const next = { ...current }; delete next[art.id]; return next; });
+      setToast(background ? `${art.title} · ${fullImageLabel(art)}已保存到画架`
+        : art.provider === "cleveland" ? "已收入画架 · 馆方高清 JPEG 已保存在本地" : "已收入画架 · 原图已保存在本地");
+    } catch (error) {
+      const previous = collectionRetryAt.current.get(art.id)?.failures || 0;
+      const failures = previous + 1;
+      const wait = String(error).includes("429") ? 10 * 60_000 : Math.min(30 * 60_000, 60_000 * 2 ** Math.min(failures, 5));
+      collectionRetryAt.current.set(art.id, { at: Date.now() + wait, failures });
+      setToast(`${fullImageLabel(art)}下载暂未成功：${errorText(error)} ${background ? "稍后空闲时自动重试。" : "稍后空闲时自动重试，也可手动重试。"}`);
+    } finally {
+      collectionActive.current.delete(art.id);
+      setSaving((current) => current.filter((id) => id !== art.id));
+      if (background) setCollectionStatus("");
+    }
+  }
   async function save(art: Artwork) {
     const existing = savedFor(art.id);
     if (!art.original) {
@@ -1162,43 +1220,12 @@ export default function App() {
       setToast(`这件作品的${fullImageLabel(art)}已经在画架上`);
       return;
     }
-    if (saving.includes(art.id)) return;
-    setSaving((s) => [...s, art.id]);
-    if (!existing) {
-      setLibrary((l) => ({
-        ...l,
-        saved: l.saved.some((s) => s.artwork.id === art.id)
-          ? l.saved
-          : [{ artwork: art, local: "", savedAt: Date.now() }, ...l.saved],
-      }));
-    }
-    try {
-      const local = await cacheArtwork(art.id, art.original, "collection");
-      setLibrary((l) => ({
-        ...l,
-        saved: l.saved.some((s) => s.artwork.id === art.id)
-          ? l.saved.map((s) =>
-              s.artwork.id === art.id
-                ? { ...s, artwork: art, local, savedAt: Date.now() }
-                : s,
-            )
-          : [{ artwork: art, local, savedAt: Date.now() }, ...l.saved],
-      }));
-      setHd((h) => {
-        const next = { ...h };
-        delete next[art.id];
-        return next;
-      });
-      setToast(
-        existing
-          ? art.provider === "cleveland" ? "画架作品已升级为馆方高清 JPEG" : "画架作品已升级为原始分辨率"
-          : art.provider === "cleveland" ? "已收入画架 · 馆方高清 JPEG 已保存在本地" : "已收入画架 · 原图已保存在本地",
-      );
-    } catch (e) {
-      setToast(`作品已在画架；${fullImageLabel(art)}暂未下载：${errorText(e)} 可稍后在画架中重试。`);
-    } finally {
-      setSaving((s) => s.filter((id) => id !== art.id));
-    }
+    if (collectionActive.current.has(art.id)) return;
+    if (existing) { await downloadCollectionOriginal(art); return; }
+    setLibrary((current) => ({ ...current, saved: current.saved.some((item) => item.artwork.id === art.id)
+      ? current.saved : [{ artwork: art, local: "", savedAt: Date.now() }, ...current.saved] }));
+    if (!desktop) { await downloadCollectionOriginal(art); return; }
+    setToast(`已收入画架 · 闲时自动下载${fullImageLabel(art)}；再次点击书签可立即下载。`);
   }
   async function loadHd(art: Artwork) {
     if (!hasArtworkImage(art)) {
@@ -1230,6 +1257,41 @@ export default function App() {
     } finally {
       setHdBusy(false);
     }
+  }
+  async function localArtworkFile(art: Artwork): Promise<string | null> {
+    const saved = savedFor(art.id);
+    if (saved && isOriginalLocal(saved.local)) return saved.local;
+    for (const variant of ["original", "hd", "medium", "preview"] as const) {
+      const local = await cachedArtwork(art.id, variant);
+      if (local) return local;
+    }
+    return saved?.local || null;
+  }
+  async function revealArtworkFile(art: Artwork) {
+    setContext(null);
+    if (!desktop) { setToast("请在 Windows 桌面版打开本地图片文件夹"); return; }
+    try {
+      const relative = await localArtworkFile(art);
+      if (!relative) throw new Error("这幅画尚无本地图片；可先加载画质或加入画架");
+      await invoke("reveal_artwork_file", { relative });
+    } catch (error) { setToast(errorText(error)); }
+  }
+  async function setArtworkWallpaper(art: Artwork) {
+    setContext(null);
+    if (!desktop) { setToast("设置桌面壁纸仅支持 Windows 桌面版"); return; }
+    if (!art.original) { setToast("馆藏来源未提供可下载的图片"); return; }
+    setToast("正在准备桌面壁纸的原图…");
+    try {
+      const saved = savedFor(art.id);
+      let relative = saved && isOriginalLocal(saved.local) ? saved.local : await cachedArtwork(art.id, "original");
+      if (!relative) {
+        relative = await cacheArtwork(art.id, art.original, saved ? "collection" : "original");
+        if (saved) setLibrary((current) => ({ ...current, saved: current.saved.map((item) =>
+          item.artwork.id === art.id ? { ...item, local: relative! } : item) }));
+      }
+      await invoke("set_artwork_wallpaper", { relative });
+      setToast("已设置为 Windows 桌面壁纸");
+    } catch (error) { setToast(errorText(error)); }
   }
   function newChat() {
     if (busy) return;
@@ -1680,7 +1742,7 @@ export default function App() {
                   <p>留下心动的瞬间，慢慢看，常常看。</p>
                 </div>
                 <span className="offline-pill">
-                  <Check size={14} /> {library.saved.some((s) => !isOriginalLocal(s.local)) ? "画架已保存 · 部分高清图待下载" : "本地图片 · 离线可看"}
+                  <Check size={14} /> {collectionStatus || (pendingOriginals ? `${pendingOriginals} 幅原图待下载 · 闲时自动继续` : "已下载的画作可离线看")}
                 </span>
               </div>
               <label className="filter">
@@ -2136,7 +2198,7 @@ export default function App() {
       {context && (
         <div
           className="context-menu"
-          style={{ left: context.x, top: context.y }}
+          style={{ left: Math.max(8, Math.min(context.x, window.innerWidth - 250)), top: Math.max(8, Math.min(context.y, window.innerHeight - 420)) }}
           onClick={(e) => e.stopPropagation()}
         >
           <button onClick={() => openArtworkChat(context.art)} disabled={busy}>
@@ -2176,6 +2238,12 @@ export default function App() {
               <FolderOpen size={16} /> 整理画架主题与笔记
             </button>
           )}
+          {desktop && <button onClick={() => void revealArtworkFile(context.art)}>
+            <FolderOpen size={16} /> 打开本地文件所在位置
+          </button>}
+          {desktop && <button disabled={!context.art.original} onClick={() => void setArtworkWallpaper(context.art)}>
+            <ImageIcon size={16} /> 设为 Windows 桌面壁纸
+          </button>}
           {savedFor(context.art.id) && (
             <button
               className="danger"
@@ -2225,6 +2293,7 @@ export default function App() {
             </button>
             <div
               className="detail-canvas"
+              onContextMenu={(event) => { event.preventDefault(); setContext({ art: detail, x: event.clientX, y: event.clientY }); }}
               role="button"
               tabIndex={hasArtworkImage(detail) || savedFor(detail.id)?.local ? 0 : -1}
               aria-label={`${hasArtworkImage(detail) || savedFor(detail.id)?.local ? "全屏欣赏" : "馆藏资料"} ${detail.title}`}
@@ -2362,6 +2431,7 @@ export default function App() {
               viewArtwork(viewerArts[index + 1]);
           }}
           onClose={closeViewer}
+          onContextMenu={(x, y) => setContext({ art: detail, x, y })}
         />
       )}
       {showSettings && (
@@ -2489,6 +2559,7 @@ function SettingsDialog({
   const [hasKey, setHasKey] = useState(false);
   const [searchKey, setSearchKey] = useState("");
   const [hasSearchKey, setHasSearchKey] = useState(false);
+  const [braveUsage, setBraveUsage] = useState<BraveUsageSummary | null>(null);
   const [folder, setFolder] = useState("");
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
@@ -2517,7 +2588,10 @@ function SettingsDialog({
     };
   }, [draft.baseUrl]);
   useEffect(() => {
-    if (desktop) void invoke<boolean>("has_api_key", { baseUrl: SEARCH_KEY_ADDRESS }).then(setHasSearchKey).catch(() => setHasSearchKey(false));
+    if (desktop) {
+      void invoke<boolean>("has_api_key", { baseUrl: SEARCH_KEY_ADDRESS }).then(setHasSearchKey).catch(() => setHasSearchKey(false));
+      void invoke<BraveUsageSummary>("brave_usage").then(setBraveUsage).catch((e) => setError(errorText(e)));
+    }
   }, []);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -2695,7 +2769,7 @@ function SettingsDialog({
               </button>
             )}
             <label className="toggle-row">
-              <span>全网搜图 <small>查找艺术家官网、画廊与其他作品页面；搜索词将发送给 Brave。</small></span>
+              <span>启用 Brave 搜索 <small>开启后用 Brave 搜索图片和来源网页；搜索词会发送给 Brave。关闭后只查询开放馆藏。</small></span>
               <input type="checkbox" checked={!!draft.webSearch} disabled={!desktop} onChange={(e) => setDraft({ ...draft, webSearch: e.target.checked })} />
             </label>
             <label>
@@ -2703,6 +2777,14 @@ function SettingsDialog({
               <input type="password" autoComplete="off" disabled={!desktop} value={searchKey} placeholder={hasSearchKey ? "留空保留现有密钥" : "输入 Brave Search API 密钥"} onChange={(e) => setSearchKey(e.target.value)} />
             </label>
             {hasSearchKey && <button type="button" className="text-button danger" onClick={() => invoke("save_api_key", { baseUrl: SEARCH_KEY_ADDRESS, key: "" }).then(() => { setHasSearchKey(false); setSearchKey(""); }).catch((e) => setError(errorText(e)))}>删除全网搜图密钥</button>}
+            {braveUsage && <div className="brave-usage" role="status">
+              <strong>Brave 调用记录 · {braveUsage.month}</strong>
+              <span>网页 {braveUsage.web} 次 · 图片 {braveUsage.images} 次 · 合计 {braveUsage.web + braveUsage.images} 次</span>
+              <small>记录在当前资料库的 brave-usage.json；计入已发起请求，包含失败请求，不代表 Brave 官方账单。</small>
+              {Object.keys(braveUsage.history).length > 1 && <details><summary>查看往月记录</summary>
+                {Object.entries(braveUsage.history).sort(([a], [b]) => b.localeCompare(a)).filter(([month]) => month !== braveUsage.month).map(([month, count]) =>
+                  <p key={month}>{month} · 网页 {count.web} · 图片 {count.images} · 合计 {count.web + count.images}</p>)}</details>}
+            </div>}
             <label>
               Wikimedia 检索范围
               <select
