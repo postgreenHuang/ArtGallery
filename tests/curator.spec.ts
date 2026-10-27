@@ -267,10 +267,15 @@ test("shows unnumbered source candidates before a slower museum completes", asyn
   await expect(page.locator(".pending-wall").getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
   await expect(page.locator(".pending-wall .art-number")).toHaveCount(0);
   await expect(page.getByText("已有馆藏返回候选，其他来源仍在查找；作品尚未复核。")).toBeVisible();
+  await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].resultSetId)).toBeTruthy();
+  const previewSetId = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].resultSetId);
   await expect(page.locator(".search-notice").first()).toContainText("作者不匹配");
   await expect(page.locator(".pending-wall")).toHaveCount(0);
   await expect(page.locator(".art-number")).toHaveText("作品 1");
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages.length)).toBe(2);
+  const messages = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages);
+  expect(messages).toHaveLength(2);
+  expect(messages[1].resultSetId).toBe(previewSetId);
+  expect(messages[1].resultSetId).toBe(messages[1].id);
 });
 
 test("stopping a page review keeps newly found works without claiming a match", async ({ page }) => {

@@ -58,6 +58,7 @@ export interface CandidateReview {
 }
 export interface Message {
   id: string;
+  resultSetId?: string;
   role: "user" | "assistant";
   text: string;
   artworks?: Artwork[];

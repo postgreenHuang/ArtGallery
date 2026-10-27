@@ -938,7 +938,7 @@ export default function App() {
         const exploreIntent = buildExploreIntent({ request: text, query: plan.query, targetArtist: plan.targetArtist, criteria: plan.criteria,
           previous: continueExisting ? previousIntent : undefined, anchorWorkKeys: similarTo ? [similarTo.recordKey || `${similarTo.provider || "commons"}:${similarTo.id}`] : [],
           relation: branch?.plan.relation });
-        const message: Message = { id: responseId, role: "assistant", text: needsReview ? "已搜到候选，正在逐件复核资料与缩略图…" : "正在整理搜索结果…", error: result.failed,
+        const message: Message = { id: responseId, resultSetId: responseId, role: "assistant", text: needsReview ? "已搜到候选，正在逐件复核资料与缩略图…" : "正在整理搜索结果…", error: result.failed,
           artworks: result.artworks, webResults: result.webResults, searchWarning: result.warning,
           query: plan.query, targetArtist: plan.targetArtist, artistAliases: plan.artistAliases,
           identityCandidates: plan.identityCandidates,
@@ -1034,7 +1034,7 @@ export default function App() {
       previewResponseId = crypto.randomUUID();
       const previewId = previewResponseId;
       updateConversation(id, (c) => ({ ...c, messages: [...c.messages, {
-        id: previewId, role: "assistant", text: "正在从各馆藏搜集候选…", query: plan.query,
+        id: previewId, resultSetId: previewId, role: "assistant", text: "正在从各馆藏搜集候选…", query: plan.query,
         artworks: [], reviewPending: true,
       }] }));
       const result = await runCuratorSearch({ query: plan.query, alternativeQueries: plan.alternativeQueries,
