@@ -1,4 +1,4 @@
-import type { Settings, WebResult } from "../../types";
+import type { Artwork, Settings, WebResult } from "../../types";
 import { searchForCurator, type ArtProvider, type SearchConstraints, type SourceStatus } from "../artSearch";
 import { searchWebPages } from "../webSearch";
 import type { SourceQueryPlan } from "./compile";
@@ -45,6 +45,7 @@ export async function runCuratorSearch(args: {
   signal: AbortSignal;
   desktop: boolean;
   onPhase?: (phase: string) => void;
+  onCandidatePreview?: (artworks: Artwork[]) => void;
 }) {
   const { settings, constraints, signal } = args;
   const runId = crypto.randomUUID();
@@ -59,7 +60,7 @@ export async function runCuratorSearch(args: {
   sourceCalls += firstProviders.length + Number(initialWeb);
   attemptedQueries.push(args.query);
   let result = await searchForCurator(args.query, settings, signal,
-    { ...constraints, providers: firstProviders, allowScopeFallback: false });
+    { ...constraints, providers: firstProviders, allowScopeFallback: false }, args.onCandidatePreview);
   detailCalls += result.detailCalls || 0;
   const sourceQueries: SourceQueryPlan[] = [...(result.sourceQueries || [])];
   const sourceStatuses: SourceStatus[] = [...(result.sourceStatuses || [])];
@@ -80,7 +81,7 @@ export async function runCuratorSearch(args: {
       sourceCalls += permitted.length;
       attemptedQueries.push(alternative);
       const supplemental = await searchForCurator(alternative, { ...settings, webSearch: false }, signal,
-        { ...constraints, providers: permitted, allowScopeFallback: false });
+        { ...constraints, providers: permitted, allowScopeFallback: false }, args.onCandidatePreview);
       detailCalls += supplemental.detailCalls || 0;
       sourceQueries.push(...(supplemental.sourceQueries || []));
       sourceStatuses.push(...(supplemental.sourceStatuses || []));

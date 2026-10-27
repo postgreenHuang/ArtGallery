@@ -51,13 +51,28 @@ export async function searchAcrossProviders(
   signal: AbortSignal,
   offsets?: ProviderOffsets,
   constraints: SearchConstraints = {},
+  onProviderArtworks?: (artworks: Artwork[]) => void,
 ): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string; sourceQueries: SourceQueryPlan[]; sourceStatuses: SourceStatus[]; detailCalls: number }> {
   const selected = providers.filter((provider) => (!constraints.providers || constraints.providers.includes(provider)) &&
     (!offsets || offsets[provider] !== undefined));
   const sourceQueries = selected.map((provider) => compileSourceQuery(provider, constraints.criteria));
   const results = await Promise.allSettled(selected.map((provider, index) =>
     searchProvider(provider, query, scope, offsets?.[provider] || 0, signal, !!constraints.targetArtist,
-      sourceQueries[index], constraints.targetArtist),
+      sourceQueries[index], constraints.targetArtist).then((result) => {
+        if (!signal.aborted && onProviderArtworks) {
+          const matched = result.artworks.filter((art) => matchesArtist(art, constraints));
+          if (matched.length) {
+            try {
+              onProviderArtworks(matched.map((art) => ({ ...art,
+                selectionReason: constraints.targetArtist
+                  ? `作者字段匹配“${constraints.targetArtist.slice(0, 50)}”。`
+                  : `馆藏按“${query.slice(0, 40)}”返回的候选，相关性待核实。`,
+              })));
+            } catch { /* A preview failure must not discard a successful source response. */ }
+          }
+        }
+        return result;
+      }),
   ));
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
   const next: ProviderOffsets = {};
@@ -100,15 +115,16 @@ export async function searchAcrossProviders(
       rejected ? `已排除 ${rejected} 件作者不匹配的作品。` : ""].filter(Boolean).join(" ") };
 }
 
-export async function searchForCurator(query: string, settings: Settings, signal: AbortSignal, constraints: SearchConstraints = {}) {
+export async function searchForCurator(query: string, settings: Settings, signal: AbortSignal, constraints: SearchConstraints = {},
+  onProviderArtworks?: (artworks: Artwork[]) => void) {
   const warnings: string[] = [];
   const [collection, web] = await Promise.allSettled([
     (async () => {
-      let found = await searchAcrossProviders(query, settings.scope, signal, undefined, constraints);
+      let found = await searchAcrossProviders(query, settings.scope, signal, undefined, constraints, onProviderArtworks);
       if (!found.artworks.length && settings.scope === "google" && constraints.allowScopeFallback !== false &&
         (!constraints.providers || constraints.providers.includes("commons"))) {
         const broad = await searchAcrossProviders(query, "commons", signal, undefined,
-          { ...constraints, providers: ["commons"], allowScopeFallback: false });
+          { ...constraints, providers: ["commons"], allowScopeFallback: false }, onProviderArtworks);
         found = { ...broad, detailCalls: found.detailCalls + broad.detailCalls, sourceQueries: [...found.sourceQueries, ...broad.sourceQueries],
           sourceStatuses: [...found.sourceStatuses, ...broad.sourceStatuses],
           warning: [found.warning, broad.warning, "本次已扩大到全部 Wikimedia Commons。"].filter(Boolean).join(" ") };

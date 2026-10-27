@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = false, slowReview = false, slowPageReview = false, qualityScenario = false) {
-  await page.addInitScript(({ failSynthesis, reviewScenario, slowReview, slowPageReview, qualityScenario }) => {
+async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = false, slowReview = false, slowPageReview = false, qualityScenario = false, slowMuseum = false) {
+  await page.addInitScript(({ failSynthesis, reviewScenario, slowReview, slowPageReview, qualityScenario, slowMuseum }) => {
     const state = window as any;
     state.isTauri = true;
     state.__curatorCalls = [];
@@ -27,6 +27,8 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
         if (command === "museum_query") {
           const params = new URLSearchParams(args.query);
           const q = params.get("q") || "";
+          if (slowMuseum && args.provider === "cleveland" && q.includes("Artem"))
+            await new Promise((resolve) => setTimeout(resolve, 1500));
           if (args.provider !== "chicago" || !q.includes("Artem")) return { data: [] };
           if (reviewScenario && params.get("page") === "2") return { config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 12 }, data: [
             { id: 5, title: "Second Portrait", artist_display: "Artem Rohovyi", is_public_domain: true, image_id: "6d484387-2509-5e8e-2c43-22f9981972eb" },
@@ -103,7 +105,7 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
         return null;
       },
     };
-  }, { failSynthesis, reviewScenario, slowReview, slowPageReview, qualityScenario });
+  }, { failSynthesis, reviewScenario, slowReview, slowPageReview, qualityScenario, slowMuseum });
   await page.route(/https:\/\/(www\.artic\.edu|imgs\.search\.brave\.com|images\.metmuseum\.org)\//, (route) => route.fulfill({
     contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
   }));
@@ -258,6 +260,17 @@ test("stopping a slow review keeps candidates as uncertain and restores the comp
   await page.locator(".history-list article > button:first-child").click();
   await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
   await expect(page.locator(".review-audit")).toContainText("待核实");
+});
+
+test("shows unnumbered source candidates before a slower museum completes", async ({ page }) => {
+  await mockDesktop(page, false, false, false, false, false, true);
+  await expect(page.locator(".pending-wall").getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
+  await expect(page.locator(".pending-wall .art-number")).toHaveCount(0);
+  await expect(page.getByText("已有馆藏返回候选，其他来源仍在查找；作品尚未复核。")).toBeVisible();
+  await expect(page.locator(".search-notice").first()).toContainText("作者不匹配");
+  await expect(page.locator(".pending-wall")).toHaveCount(0);
+  await expect(page.locator(".art-number")).toHaveText("作品 1");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages.length)).toBe(2);
 });
 
 test("stopping a page review keeps newly found works without claiming a match", async ({ page }) => {

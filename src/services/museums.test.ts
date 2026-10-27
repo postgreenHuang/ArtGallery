@@ -61,9 +61,27 @@ describe("independent museum collections", () => {
       return new Response(JSON.stringify({ config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 1 }, data: [chicago] }));
     });
     try {
-      const result = await searchAcrossProviders("Monet", "google", new AbortController().signal);
+      const previews: string[] = [];
+      const result = await searchAcrossProviders("Monet", "google", new AbortController().signal, undefined, {},
+        (artworks) => { previews.push(...artworks.map((art) => art.provider)); });
       expect(result.artworks.map((art) => art.provider)).toEqual(["cleveland", "chicago"]);
+      expect(previews.sort()).toEqual(["chicago", "cleveland"]);
       expect(result.warning).toContain("部分馆藏");
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+
+  it("does not discard a source result when the preview consumer fails", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("clevelandart.org")) return new Response(JSON.stringify({ info: { total: 1 }, data: [cleveland] }));
+      return new Response(JSON.stringify({ config: { iiif_url: "https://www.artic.edu/iiif/2" }, pagination: { total: 1 }, data: [chicago] }));
+    });
+    try {
+      const result = await searchAcrossProviders("Monet", "google", new AbortController().signal, undefined,
+        { providers: ["cleveland", "chicago"] }, () => { throw new Error("preview failed"); });
+      expect(result.artworks).toHaveLength(2);
     } finally {
       fetcher.mockRestore();
     }

@@ -822,6 +822,7 @@ export default function App() {
     );
     const controller = new AbortController();
     request.current = controller;
+    let previewResponseId: string | undefined;
     const continueExisting =
       !similarTo && !!active && current?.kind !== "artwork";
     const id = continueExisting ? active! : crypto.randomUUID();
@@ -905,8 +906,8 @@ export default function App() {
         updateConversation(id, (c) => ({ ...c, messages: [...c.messages, { id: crypto.randomUUID(), role: "assistant", text: reply }] }));
         return;
       }
-      const present = async (result: { artworks: Artwork[]; webResults: WebResult[]; warning: string; scope: Settings["scope"]; offsets?: Message["providerOffsets"]; suggestions?: ArtistSuggestion[]; failed?: boolean; queries?: string[]; diagnostics?: Message["retrievalDiagnostics"] }) => {
-        const responseId = crypto.randomUUID();
+      const present = async (result: { artworks: Artwork[]; webResults: WebResult[]; warning: string; scope: Settings["scope"]; offsets?: Message["providerOffsets"]; suggestions?: ArtistSuggestion[]; failed?: boolean; queries?: string[]; diagnostics?: Message["retrievalDiagnostics"] }, existingResponseId?: string) => {
+        const responseId = existingResponseId || crypto.randomUUID();
         const needsReview = library.settings.useAi && desktop && (result.artworks.length > 0 || result.webResults.length > 0);
         const previousIntent = [...history].reverse().find((item) => item.exploreIntent)?.exploreIntent;
         const exploreIntent = buildExploreIntent({ request: text, query: plan.query, targetArtist: plan.targetArtist, criteria: plan.criteria,
@@ -921,7 +922,8 @@ export default function App() {
           reviewPending: needsReview, scope: result.scope, providerOffsets: result.offsets, suggestions: result.suggestions };
         if (controller.signal.aborted) return;
         // Save all candidates before review; the main wall waits for review to finish.
-        updateConversation(id, (c) => ({ ...c, messages: [...c.messages, message] }));
+        updateConversation(id, (c) => ({ ...c, messages: c.messages.some((m) => m.id === responseId)
+          ? c.messages.map((m) => m.id === responseId ? message : m) : [...c.messages, message] }));
         let selected = { artworks: result.artworks, webResults: result.webResults, rejectedArtworks: [] as Artwork[], rejectedWebResults: [] as WebResult[], warning: "" };
         if (needsReview) {
           try { selected = await reviewCandidates(text, history, plan, result.artworks, result.webResults, library.settings, controller.signal, setPhase); }
@@ -1004,27 +1006,39 @@ export default function App() {
         return;
       }
       setPhase("正在搜索馆藏与作品来源…");
+      previewResponseId = crypto.randomUUID();
+      const previewId = previewResponseId;
+      updateConversation(id, (c) => ({ ...c, messages: [...c.messages, {
+        id: previewId, role: "assistant", text: "正在从各馆藏搜集候选…", query: plan.query,
+        artworks: [], reviewPending: true,
+      }] }));
       const result = await runCuratorSearch({ query: plan.query, alternativeQueries: plan.alternativeQueries,
         settings: { ...library.settings, scope: chosen?.scope || library.settings.scope }, constraints: plan,
-        signal: controller.signal, desktop, onPhase: setPhase });
+        signal: controller.signal, desktop, onPhase: setPhase,
+        onCandidatePreview: (artworks) => {
+          if (controller.signal.aborted) return;
+          updateConversation(id, (c) => ({ ...c, messages: c.messages.map((m) => {
+            if (m.id !== previewId || !m.reviewPending) return m;
+            const existing = new Set((m.artworks || []).map((art) => art.recordKey || art.id));
+            const additions = artworks.filter((art) => !existing.has(art.recordKey || art.id));
+            return { ...m, text: "已有馆藏返回候选，其他来源仍在查找；作品尚未复核。",
+              artworks: [...(m.artworks || []), ...additions] };
+          }) }));
+        } });
       if (controller.signal.aborted) return;
       plan.query = result.query;
-      await present({ ...result, warning: [result.warning, plan.identityWarning].filter(Boolean).join(" ") });
+      await present({ ...result, warning: [result.warning, plan.identityWarning].filter(Boolean).join(" ") }, previewId);
 
     } catch (e) {
-      if (!controller.signal.aborted)
-        updateConversation(id, (c) => ({
-          ...c,
-          messages: [
-            ...c.messages,
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              text: errorText(e),
-              error: true,
-            },
-          ],
-        }));
+      if (!controller.signal.aborted) {
+        const pendingId = previewResponseId;
+        const uncertain: CandidateReview = { verdict: "uncertain", reason: "检索中断，候选尚未核实。", confidence: 0,
+          basis: "unavailable", imageProvided: false, pageRead: false };
+        updateConversation(id, (c) => ({ ...c, messages: pendingId && c.messages.some((m) => m.id === pendingId)
+          ? c.messages.map((m) => m.id === pendingId ? { ...m, text: `检索中断：${errorText(e)}。已返回的候选保留待核实。`,
+            error: true, reviewPending: false, artworks: m.artworks?.map((art) => ({ ...art, review: uncertain })) } : m)
+          : [...c.messages, { id: crypto.randomUUID(), role: "assistant", text: errorText(e), error: true }] }));
+      }
     } finally {
       if (request.current === controller) {
         request.current = null;
