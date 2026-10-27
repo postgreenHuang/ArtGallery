@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Artwork } from "../types";
-import { discoveryCoverage, rankDiscoveryCandidates } from "./discovery";
+import { discoveryCoverage, discoveryProviderOrder, discoveryRateLimited, rankDiscoveryCandidates } from "./discovery";
 
 const art = (id: number, artist: string, culture?: string, objectType?: string, provider: Artwork["provider"] = "chicago"): Artwork => ({
   id, provider, file: String(id), title: `Work ${id}`, artist, date: "", description: "", thumb: "", original: "", source: "https://example.org",
@@ -10,6 +10,19 @@ const art = (id: number, artist: string, culture?: string, objectType?: string, 
 });
 
 describe("discovery diversity", () => {
+  it("bounds a five-topic refresh to two provider searches per topic", () => {
+    const attempts = Array.from({ length: 5 }, (_, index) => discoveryProviderOrder(index));
+    expect(attempts).toEqual([
+      ["commons", "cleveland"], ["cleveland", "commons"], ["chicago", "commons"],
+      ["met", "commons"], ["commons", "cleveland"],
+    ]);
+    expect(attempts.flat()).toHaveLength(10);
+  });
+  it("recognizes a provider cooldown without treating an empty result as rate limited", () => {
+    expect(discoveryRateLimited(new Error("Wikimedia HTTP 429"))).toBe(true);
+    expect(discoveryRateLimited("来源限流，进入冷却期")).toBe(true);
+    expect(discoveryRateLimited("没有匹配作品")).toBe(false);
+  });
   it("ranks unseen authors, cultures and object types above familiar candidates", () => {
     const familiar = art(1, "Known Artist", "France", "Painting");
     const novel = art(2, "New Artist", "Japan", "Print", "met");

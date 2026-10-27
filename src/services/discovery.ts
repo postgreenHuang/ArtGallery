@@ -101,26 +101,37 @@ export function discoveryCoverage(artworks: Artwork[], seenArtists: ReadonlySet<
   }
   return { newArtists: artists.size, newCultures: cultures.size, newTypes: types.size, unknownCulture, unknownType };
 }
+// Each topic gets at most one primary provider and one Commons fallback.
+// This caps a five-topic refresh at ten searches even when museums are slow
+// or empty, while still rotating the institution used for the first try.
+export function discoveryProviderOrder(topicIndex: number): readonly [typeof providers[number], typeof providers[number]] {
+  const primary = providers[topicIndex % providers.length];
+  return primary === "commons" ? ["commons", "cleveland"] : [primary, "commons"];
+}
+export function discoveryRateLimited(error: unknown): boolean {
+  return /(?:HTTP\s*)?429|限流|冷却|rate.?limit/i.test(String(error));
+}
 export async function discoverArt(
   scope: Settings["scope"], previousTopics: string[], previousIds: number[],
   seenIds: ReadonlySet<number>, offsets: Record<string, number>, signal: AbortSignal,
   seenArtists: ReadonlySet<string> = new Set(),
   seenCultures: ReadonlySet<string> = new Set(), seenTypes: ReadonlySet<string> = new Set(),
-): Promise<{ artworks: Artwork[]; artists: string[]; offsets: Record<string, number>; warning: string; coverage: DiscoveryCoverage }> {
+): Promise<{ artworks: Artwork[]; artists: string[]; offsets: Record<string, number>; warning: string; coverage: DiscoveryCoverage; sourceCalls: number }> {
   const topics = chooseDiscoveryTopics(previousTopics);
   const artworks: Artwork[] = [];
   const nextOffsets = { ...offsets };
   let lastError: unknown;
+  let sourceCalls = 0;
+  const limitedProviders = new Set<string>();
   for (const [index, topic] of topics.entries()) {
     if (signal.aborted) throw new DOMException("已停止", "AbortError");
-    const order = [...providers.slice(index % providers.length), ...providers.slice(0, index % providers.length)];
-    const attempts = order.slice(0, 2);
-    if (!attempts.includes("commons")) attempts.push("commons");
     let fallback: Artwork | undefined;
     let selected = false;
-    for (const provider of attempts) {
+    for (const provider of discoveryProviderOrder(index)) {
+      if (limitedProviders.has(provider)) continue;
       const key = `${provider}:${topic.key}`;
       if (offsets[key] === -1) continue;
+      sourceCalls++;
       try {
         const result = await searchProvider(provider, topic.query, scope, offsets[key] || 0, signal);
         // An exhausted cursor stays exhausted across refreshes; 0 would replay page one.
@@ -142,6 +153,7 @@ export async function discoverArt(
       } catch (error) {
         if (signal.aborted) throw error;
         lastError = error;
+        if (discoveryRateLimited(error)) limitedProviders.add(provider);
       }
     }
     if (!selected && fallback) artworks.push({ ...fallback,
@@ -150,5 +162,6 @@ export async function discoverArt(
   if (!artworks.length && lastError) throw lastError;
   return { artworks, artists: topics.map((topic) => topic.key), offsets: nextOffsets,
     coverage: discoveryCoverage(artworks, seenArtists, seenCultures, seenTypes),
+    sourceCalls,
     warning: lastError && artworks.length < topics.length ? "部分馆藏暂时不可用，本组只展示已找到的作品。" : "" };
 }
