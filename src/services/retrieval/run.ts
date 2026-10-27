@@ -1,4 +1,4 @@
-import type { Artwork, Settings, WebResult } from "../../types";
+import type { ArtistSuggestion, Artwork, Settings, WebResult } from "../../types";
 import { searchForCurator, type ArtProvider, type SearchConstraints, type SourceStatus } from "../artSearch";
 import { searchWebPages } from "../webSearch";
 import type { SourceQueryPlan } from "./compile";
@@ -12,6 +12,34 @@ export interface RetrievalDiagnostics {
   sourceQueries?: SourceQueryPlan[];
   sourceStatuses?: SourceStatus[];
   qualitySupplemented?: boolean;
+}
+
+export async function runRecommendationSearch(args: {
+  recommendations: ArtistSuggestion[];
+  settings: Settings;
+  signal: AbortSignal;
+}) {
+  const providerPairs: ArtProvider[][] = [["commons", "cleveland"], ["chicago", "met"], ["commons", "chicago"]];
+  const recommendations = args.recommendations.slice(0, 3);
+  const checked = await Promise.all(recommendations.map(async (candidate, index) => ({ candidate,
+    result: await searchForCurator(candidate.query, { ...args.settings, webSearch: false }, args.signal,
+      { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn],
+        providers: providerPairs[index], allowScopeFallback: false }),
+  })));
+  if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
+  const artworks = checked.flatMap((item) => item.result.artworks.slice(0, 4).map((art) => ({ ...art,
+    selectionReason: `风格推荐 ${item.candidate.nameZh}：${item.candidate.reason.slice(0, 45)}；已核对作者。` })))
+    .filter((art, index, all) => all.findIndex((other) => other.id === art.id) === index);
+  const webResults = checked.flatMap((item) => item.result.webResults.slice(0, 3))
+    .filter((item, index, all) => all.findIndex((other) => other.url === item.url) === index);
+  const diagnostics: RetrievalDiagnostics = { runId: crypto.randomUUID(), sourceCalls: checked.reduce((sum, _, index) => sum + providerPairs[index].length, 0),
+    sourceLimit: 6, detailCalls: checked.reduce((sum, item) => sum + (item.result.detailCalls || 0), 0),
+    attemptedQueries: recommendations.map((item) => item.query),
+    sourceQueries: checked.flatMap((item) => item.result.sourceQueries || []),
+    sourceStatuses: checked.flatMap((item) => item.result.sourceStatuses || []) };
+  return { artworks, webResults, diagnostics, scope: args.settings.scope,
+    warning: checked.map((item) => `${item.candidate.nameEn}：${item.candidate.reason} ${item.result.warning} ${!item.result.artworks.length ? "本次无作者匹配的馆藏作品。" : ""}`).join("\n"),
+    suggestions: checked.filter((item) => item.result.artworks.length).map((item) => ({ ...item.candidate, scope: item.result.scope })) };
 }
 
 export async function supplementAfterRejection(args: {

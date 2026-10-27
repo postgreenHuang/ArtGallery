@@ -58,10 +58,9 @@ import {
 } from "./services/storage";
 
 import { highResolution } from "./services/commons";
-import { searchForCurator } from "./services/artSearch";
 import { reviewCandidates } from "./services/review";
 import { SEARCH_KEY_ADDRESS } from "./services/webSearch";
-import { runCuratorSearch, supplementAfterRejection } from "./services/retrieval/run";
+import { runCuratorSearch, runRecommendationSearch, supplementAfterRejection } from "./services/retrieval/run";
 import { runContinuationSearch } from "./services/retrieval/continue";
 import { museumName } from "./services/museums";
 import { discoverArt, type DiscoveryCoverage } from "./services/discovery";
@@ -1015,19 +1014,10 @@ export default function App() {
       };
       if (plan.recommendations?.length) {
         setPhase("正在核对推荐画家的实际作品…");
-        const providerPairs = [["commons", "cleveland"], ["chicago", "met"], ["commons", "chicago"]] as const;
-        const checked = await Promise.all(plan.recommendations.slice(0, 3).map(async (candidate, index) => ({
-          candidate,
-          result: await searchForCurator(candidate.query, { ...library.settings, webSearch: false }, controller.signal,
-            { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn], providers: providerPairs[index], allowScopeFallback: false }),
-        })));
+        const recommended = await runRecommendationSearch({ recommendations: plan.recommendations,
+          settings: library.settings, signal: controller.signal });
         if (controller.signal.aborted) return;
-        const artworks = checked.flatMap((item) => item.result.artworks.slice(0, 4).map((art) => ({ ...art, selectionReason: `风格推荐 ${item.candidate.nameZh}：${item.candidate.reason.slice(0, 45)}；已核对作者。` }))).filter((art, index, all) => all.findIndex((other) => other.id === art.id) === index);
-        const webResults = checked.flatMap((item) => item.result.webResults.slice(0, 3)).filter((item, index, all) => all.findIndex((other) => other.url === item.url) === index);
-        await present({ artworks, webResults, warning: checked.map((item) => `${item.candidate.nameEn}：${item.candidate.reason} ${item.result.warning} ${!item.result.artworks.length ? "本次无作者匹配的馆藏作品。" : ""}`).join("\n"),
-          scope: library.settings.scope,
-          suggestions: checked.filter((item) => item.result.artworks.length).map((item) => ({ ...item.candidate, scope: item.result.scope })),
-        });
+        await present(recommended);
         return;
       }
       setPhase("正在搜索馆藏与作品来源…");
