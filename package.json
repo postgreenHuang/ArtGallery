@@ -10,6 +10,8 @@
     "tauri": "tauri",
     "test": "vitest run src",
     "evaluate": "node scripts/evaluate-curator.mjs",
+    "capture:evaluation": "node scripts/capture-evaluation.mjs",
+    "test:evaluation": "node --test scripts/capture-evaluation.test.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {
