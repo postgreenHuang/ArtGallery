@@ -44,4 +44,31 @@ describe("discovery diversity", () => {
     expect(sourceOrderDiscoveryCandidates([art(1, "Familiar"), { ...chosen, id: 20, provider: "met" }, art(2, "Novel")], [chosen])
       .map((item) => item.id)).toEqual([1, 2]);
   });
+  it("selects new work groups across five refreshes when the fixed sample has enough supply", () => {
+    const pool = Array.from({ length: 30 }, (_, index) => art(index + 1, `Artist ${index + 1}`,
+      `Culture ${index % 6}`, index % 2 ? "Print" : "Painting"));
+    const seenIds = new Set<number>(), seenArtists = new Set<string>();
+    const seenCultures = new Set<string>(), seenTypes = new Set<string>();
+    let previousIds: number[] = [];
+    const groups: number[][] = [];
+    for (let refresh = 0; refresh < 5; refresh++) {
+      const selected: Artwork[] = [];
+      for (let slot = 0; slot < 5; slot++) {
+        const ranked = rankDiscoveryCandidates(pool, { selected, seenIds, seenArtists, seenCultures, seenTypes, previousIds });
+        selected.push(ranked.find((candidate) => !seenIds.has(candidate.id))!);
+      }
+      const coverage = discoveryCoverage(selected, seenArtists, seenCultures, seenTypes);
+      expect(coverage.newArtists).toBe(5);
+      expect(coverage.unknownCulture).toBe(0);
+      expect(coverage.unknownType).toBe(0);
+      groups.push(selected.map((item) => item.id));
+      previousIds = selected.map((item) => item.id);
+      selected.forEach((item) => {
+        seenIds.add(item.id); seenArtists.add(item.artist.toLocaleLowerCase());
+        seenCultures.add(item.facets!.culture!.value.toLocaleLowerCase());
+        seenTypes.add(item.facets!.objectType!.value.toLocaleLowerCase());
+      });
+    }
+    expect(new Set(groups.flat()).size).toBe(25);
+  });
 });
