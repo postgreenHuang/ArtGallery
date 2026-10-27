@@ -2003,6 +2003,7 @@ export default function App() {
                         ...m.exploreIntent.changes.moved.map((change) => `${change.value}：${change.from}→${change.to}`),
                         m.exploreIntent.changes.queryChanged ? "检索词已变更" : "",
                         m.exploreIntent.changes.artistChanged ? "指定作者已变更" : ""].filter(Boolean).join("；") || "条件未变"}</p>}
+                    {m.retrievalDiagnostics && <p>本轮来源查询 {m.retrievalDiagnostics.sourceCalls}/{m.retrievalDiagnostics.sourceLimit}；作品详情请求 {m.retrievalDiagnostics.detailCalls ?? "旧记录未统计"} 次。</p>}
                     {m.retrievalDiagnostics?.sourceQueries?.map((plan, index) => <p key={`${plan.provider}-${index}`}>
                       {plan.provider}：{m.retrievalDiagnostics?.sourceStatuses?.[index]
                         ? ({ ok: "取得候选", empty: "无结果", filtered: "作者过滤后为空", limited: "限流", error: "暂时故障" } as const)[m.retrievalDiagnostics.sourceStatuses[index].state]

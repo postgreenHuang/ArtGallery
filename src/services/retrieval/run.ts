@@ -7,6 +7,7 @@ export interface RetrievalDiagnostics {
   runId: string;
   sourceCalls: number;
   sourceLimit: number;
+  detailCalls?: number;
   attemptedQueries: string[];
   sourceQueries?: SourceQueryPlan[];
   sourceStatuses?: SourceStatus[];
@@ -29,6 +30,7 @@ export async function supplementAfterRejection(args: {
     { ...args.constraints, providers: [provider], allowScopeFallback: false });
   if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
   return { ...result, diagnostics: { ...diagnostics, sourceCalls: diagnostics.sourceCalls + 1,
+    detailCalls: (diagnostics.detailCalls || 0) + (result.detailCalls || 0),
     sourceQueries: [...(diagnostics.sourceQueries || []), ...(result.sourceQueries || [])],
     sourceStatuses: [...(diagnostics.sourceStatuses || []), ...(result.sourceStatuses || [])], qualitySupplemented: true }, provider };
 }
@@ -48,6 +50,7 @@ export async function runCuratorSearch(args: {
   const runId = crypto.randomUUID();
   const sourceLimit = 6;
   let sourceCalls = 0;
+  let detailCalls = 0;
   const attemptedQueries: string[] = [];
   const warnings: string[] = [];
   const firstProviders: ArtProvider[] = settings.webSearch
@@ -57,6 +60,7 @@ export async function runCuratorSearch(args: {
   attemptedQueries.push(args.query);
   let result = await searchForCurator(args.query, settings, signal,
     { ...constraints, providers: firstProviders, allowScopeFallback: false });
+  detailCalls += result.detailCalls || 0;
   const sourceQueries: SourceQueryPlan[] = [...(result.sourceQueries || [])];
   const sourceStatuses: SourceStatus[] = [...(result.sourceStatuses || [])];
   if (signal.aborted) throw new DOMException("已停止", "AbortError");
@@ -77,6 +81,7 @@ export async function runCuratorSearch(args: {
       attemptedQueries.push(alternative);
       const supplemental = await searchForCurator(alternative, { ...settings, webSearch: false }, signal,
         { ...constraints, providers: permitted, allowScopeFallback: false });
+      detailCalls += supplemental.detailCalls || 0;
       sourceQueries.push(...(supplemental.sourceQueries || []));
       sourceStatuses.push(...(supplemental.sourceStatuses || []));
       if (signal.aborted) throw new DOMException("已停止", "AbortError");
@@ -103,7 +108,7 @@ export async function runCuratorSearch(args: {
       warnings.push(`网页来源检索暂不可用：${String(error).slice(0, 180)}`);
     }
   }
-  const diagnostics: RetrievalDiagnostics = { runId, sourceCalls, sourceLimit, attemptedQueries, sourceQueries, sourceStatuses };
+  const diagnostics: RetrievalDiagnostics = { runId, sourceCalls, sourceLimit, detailCalls, attemptedQueries, sourceQueries, sourceStatuses };
   return { ...result, failed: result.failed && !result.webResults.length,
     artworks: result.artworks.slice(0, 48), query: finalQuery,
     queries: attemptedQueries, warning: [...new Set(warnings)].join(" "), diagnostics };

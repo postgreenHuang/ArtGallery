@@ -56,6 +56,9 @@ export async function searchMet(query: string, offset = 0, signal?: AbortSignal,
   const ids = Array.isArray(search.objectIDs) ? search.objectIDs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(0, 8) : [];
   const results = await Promise.allSettled(ids.map(async (id: number) => normalizeMet(await metApi<MetRecord>(`v1/objects/${id}`, signal))));
   if (signal?.aborted) throw new DOMException("已停止", "AbortError");
-  if (ids.length && results.every((r) => r.status === "rejected")) throw new Error("大都会作品详情暂不可用");
-  return { artworks: results.flatMap((r) => r.status === "fulfilled" && r.value && (artistOnly || r.value.thumb) ? [r.value] : []), offset: offset + 8 < Number(search.total || 0) ? offset + 8 : undefined };
+  if (ids.length && results.every((r) => r.status === "rejected")) {
+    const limited = results.find((result) => result.status === "rejected" && /429|限流|受限/i.test(String(result.reason)));
+    throw Object.assign(new Error(limited && limited.status === "rejected" ? `大都会作品详情暂时限流（HTTP 429）：${String(limited.reason).slice(0, 120)}` : "大都会作品详情暂不可用"), { detailCalls: ids.length });
+  }
+  return { artworks: results.flatMap((r) => r.status === "fulfilled" && r.value && (artistOnly || r.value.thumb) ? [r.value] : []), offset: offset + 8 < Number(search.total || 0) ? offset + 8 : undefined, detailCalls: ids.length };
 }

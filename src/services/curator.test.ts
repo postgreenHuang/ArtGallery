@@ -214,6 +214,12 @@ describe("artist search precision and source isolation", () => {
     expect(result.offset).toBe(16);
     expect(result.artworks[0].artist).toBe("Claude Monet");
   });
+  it("preserves Met detail rate-limit status when every detail request is blocked", async () => {
+    invoke.mockResolvedValueOnce({ objectIDs: [1, 2], total: 2 })
+      .mockRejectedValueOnce("met 暂时受限（HTTP 429）")
+      .mockRejectedValueOnce("met 暂时受限（HTTP 429）");
+    await expect(searchMet("Claude Monet", 0, new AbortController().signal, true)).rejects.toThrow("HTTP 429");
+  });
   it("deduplicates web pages and embeds only search proxy thumbnails", () => {
     const results = normalizeWebResults({ results: [
       { url: "https://artist.example/art", title: "Art", thumbnail: { src: "https://tracking.example/a.jpg" } },

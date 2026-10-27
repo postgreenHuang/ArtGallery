@@ -51,7 +51,7 @@ export async function searchAcrossProviders(
   signal: AbortSignal,
   offsets?: ProviderOffsets,
   constraints: SearchConstraints = {},
-): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string; sourceQueries: SourceQueryPlan[]; sourceStatuses: SourceStatus[] }> {
+): Promise<{ artworks: Artwork[]; offsets: ProviderOffsets; warning: string; sourceQueries: SourceQueryPlan[]; sourceStatuses: SourceStatus[]; detailCalls: number }> {
   const selected = providers.filter((provider) => (!constraints.providers || constraints.providers.includes(provider)) &&
     (!offsets || offsets[provider] !== undefined));
   const sourceQueries = selected.map((provider) => compileSourceQuery(provider, constraints.criteria));
@@ -64,9 +64,11 @@ export async function searchAcrossProviders(
   const groups: Artwork[][] = [];
   const errors: string[] = [];
   const sourceStatuses: SourceStatus[] = [];
+  let detailCalls = 0;
   results.forEach((result, index) => {
     const provider = selected[index];
     if (result.status === "fulfilled") {
+      detailCalls += "detailCalls" in result.value ? Number(result.value.detailCalls) || 0 : 0;
       groups.push(result.value.artworks);
       const candidateCount = result.value.artworks.length;
       const matchedCount = result.value.artworks.filter((art) => matchesArtist(art, constraints)).length;
@@ -74,6 +76,7 @@ export async function searchAcrossProviders(
         state: !candidateCount ? "empty" : !matchedCount ? "filtered" : "ok" });
       if (result.value.offset !== undefined) next[provider] = result.value.offset;
     } else {
+      detailCalls += Number((result.reason as { detailCalls?: number } | null)?.detailCalls) || 0;
       groups.push([]);
       const detail = String(result.reason).slice(0, 180);
       errors.push(`${provider}: ${detail}`);
@@ -92,7 +95,7 @@ export async function searchAcrossProviders(
     selectionReason: constraints.targetArtist
       ? `作者字段匹配“${constraints.targetArtist.slice(0, 50)}”。`
       : `馆藏按“${query.slice(0, 40)}”返回的候选，相关性待核实。`,
-  })), offsets: next, sourceQueries, sourceStatuses,
+  })), offsets: next, sourceQueries, sourceStatuses, detailCalls,
     warning: [errors.length === selected.length && errors.length ? "馆藏搜索失败：已尝试的馆藏均暂不可用。" : errors.length ? "部分馆藏暂不可用，本次结果可能不完整。" : "",
       rejected ? `已排除 ${rejected} 件作者不匹配的作品。` : ""].filter(Boolean).join(" ") };
 }
@@ -106,7 +109,7 @@ export async function searchForCurator(query: string, settings: Settings, signal
         (!constraints.providers || constraints.providers.includes("commons"))) {
         const broad = await searchAcrossProviders(query, "commons", signal, undefined,
           { ...constraints, providers: ["commons"], allowScopeFallback: false });
-        found = { ...broad, sourceQueries: [...found.sourceQueries, ...broad.sourceQueries],
+        found = { ...broad, detailCalls: found.detailCalls + broad.detailCalls, sourceQueries: [...found.sourceQueries, ...broad.sourceQueries],
           sourceStatuses: [...found.sourceStatuses, ...broad.sourceStatuses],
           warning: [found.warning, broad.warning, "本次已扩大到全部 Wikimedia Commons。"].filter(Boolean).join(" ") };
         return { ...found, scope: "commons" as const };
@@ -126,6 +129,7 @@ export async function searchForCurator(query: string, settings: Settings, signal
     scope: collection.status === "fulfilled" ? collection.value.scope : settings.scope,
     sourceQueries: collection.status === "fulfilled" ? collection.value.sourceQueries : [],
     sourceStatuses: collection.status === "fulfilled" ? collection.value.sourceStatuses : [],
+    detailCalls: collection.status === "fulfilled" ? collection.value.detailCalls : 0,
     webResults: web.status === "fulfilled" ? web.value.map((item) => ({ ...item, selectionReason: `按“${query.slice(0, 40)}”搜到的网页线索，作者待核实。` })) : [], warning: warnings.join(" "),
     failed: (collectionFailed || web.status === "rejected") &&
       (collection.status !== "fulfilled" || !collection.value.artworks.length) &&

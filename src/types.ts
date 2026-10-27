@@ -80,7 +80,7 @@ export interface Message {
   pageReviewPending?: boolean;
   pendingPageArtworks?: Artwork[];
   searchQueries?: string[];
-  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; attemptedQueries: string[]; sourceQueries?: SourceQueryPlan[]; sourceStatuses?: SourceStatus[]; qualitySupplemented?: boolean };
+  retrievalDiagnostics?: { runId: string; sourceCalls: number; sourceLimit: number; detailCalls?: number; attemptedQueries: string[]; sourceQueries?: SourceQueryPlan[]; sourceStatuses?: SourceStatus[]; qualitySupplemented?: boolean };
   continuationRotation?: number;
   continuationRuns?: ContinuationDiagnostics[];
   rejectedArtworks?: Artwork[];

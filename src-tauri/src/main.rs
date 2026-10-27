@@ -192,7 +192,11 @@ async fn met_query(path:String,state:State<'_,AppState>)->Result<Value,String>{
         else{path.starts_with("v1.1/search?")};
     if !valid{return Err("无效的大都会查询".into())}
     let url=format!("https://collectionapi.metmuseum.org/public/collection/{path}");
-    state.client.get(url).timeout(Duration::from_secs(30)).send().await.map_err(err)?.error_for_status().map_err(err)?.json().await.map_err(err)
+    museum_cooldown(&state,"met")?;
+    {let mut next=state.museum_pacing.lock().await;if let Some(wait)=next.checked_duration_since(Instant::now()){tokio::time::sleep(wait).await;}museum_cooldown(&state,"met")?;*next=Instant::now()+Duration::from_millis(400);}
+    let response=state.client.get(url).timeout(Duration::from_secs(30)).send().await.map_err(err)?;
+    if response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS{return Err(note_museum_cooldown(&state,"met",&response))}
+    response.error_for_status().map_err(err)?.json().await.map_err(err)
 }
 #[tauri::command]
 async fn web_image_search(query:String,state:State<'_,AppState>)->Result<Value,String>{
@@ -536,6 +540,8 @@ mod tests {use super::*;
         state.museum_cooldowns.lock().unwrap().insert("cleveland".into(),Instant::now()+Duration::from_secs(90));
         assert!(museum_cooldown(&state,"cleveland").is_err());
         assert!(museum_cooldown(&state,"chicago").is_ok());
+        state.museum_cooldowns.lock().unwrap().insert("met".into(),Instant::now()+Duration::from_secs(90));
+        assert!(museum_cooldown(&state,"met").is_err());
     }
     #[test]fn native_asset_path_omits_windows_device_prefix(){assert_eq!(webview_path(std::path::Path::new(r"\\?\D:\Gallery\images\1.jpg")),r"D:\Gallery\images\1.jpg");assert_eq!(webview_path(std::path::Path::new(r"\\?\UNC\server\Gallery\1.jpg")),r"\\server\Gallery\1.jpg");}
     #[test]fn reject_untrusted_images(){assert!(image_url("https://upload.wikimedia.org/a.jpg").is_ok());assert!(image_url("https://openaccess-cdn.clevelandart.org/1998.78.14/1998.78.14_print.jpg").is_ok());assert!(image_url("https://www.artic.edu/iiif/2/id/full/843,/0/default.jpg").is_ok());assert!(image_url("https://upload.wikimedia.org.evil.test/a").is_err());assert!(image_url("https://openaccess-cdn.clevelandart.org.evil.test/a_print.jpg").is_err());assert!(image_url("file:///etc/passwd").is_err());}

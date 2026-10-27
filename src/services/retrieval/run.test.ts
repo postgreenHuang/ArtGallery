@@ -84,4 +84,10 @@ describe("bounded retrieval run", () => {
     expect(result.diagnostics.sourceCalls).toBe(5);
     expect(searchForCurator.mock.calls[1][3].providers).toEqual(["commons"]);
   });
+  it("counts Met detail requests separately from provider-search operations", async () => {
+    searchForCurator.mockResolvedValueOnce({ ...empty(), detailCalls: 8 })
+      .mockResolvedValueOnce({ ...empty(), detailCalls: 4 });
+    const result = await runCuratorSearch({ ...args(), settings: { ...defaultLibrary.settings, webSearch: false } });
+    expect(result.diagnostics).toMatchObject({ sourceCalls: 6, detailCalls: 12 });
+  });
 });
