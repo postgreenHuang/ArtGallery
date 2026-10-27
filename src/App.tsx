@@ -2025,6 +2025,10 @@ export default function App() {
                         onApply={(query, criteria) => { setEditingCriteriaId(null); void send(describeIntentEdit(query, criteria), undefined, undefined, { source: m, query, criteria }); }} />
                     : <button type="button" className="intent-edit-button" disabled={busy} onClick={() => setEditingCriteriaId(m.id)}>调整条件与检索词</button>}</>}
                   {m.pageReviewPending && <p className="search-notice" role="status">正在逐件复核新增候选，原有展墙仍可查看；停止后新增候选会保留为待核实。</p>}
+                  {m.reviewPending && !!m.artworks?.length && <div className="pending-wall">
+                    <p className="search-notice" role="status">候选预览 · 尚未完成复核，也未编号。可以先看画或加入画架；复核后明显不符的候选会移到复核记录。</p>
+                    {cards(m.artworks)}
+                  </div>}
                   {!m.reviewPending && !!m.artworks?.length && <><p className="search-notice">作品已按顺序编号，可以直接追问某一张，或比较几张作品。</p>{cards(m.artworks, false, true)}</>}
                   {!m.reviewPending && !!m.webResults?.length && <div className="web-results">
                     <h3>全网作品线索 <small>作者与授权待核实</small></h3>

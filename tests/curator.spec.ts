@@ -244,6 +244,9 @@ test("source text removes contradicted works while uncertain items and audit sta
 test("stopping a slow review keeps candidates as uncertain and restores the composer", async ({ page }) => {
   await mockDesktop(page, false, false, true);
   await expect(page.getByText("正在逐件复核候选", { exact: false })).toBeVisible();
+  await expect(page.getByText("候选预览 · 尚未完成复核", { exact: false })).toBeVisible();
+  await expect(page.locator(".pending-wall").getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
+  await expect(page.locator(".pending-wall .art-number")).toHaveCount(0);
   await page.getByRole("button", { name: "停止", exact: true }).click();
   await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
   await expect(page.getByText("复核已停止，以下候选保留为待核实。")).toBeVisible();
