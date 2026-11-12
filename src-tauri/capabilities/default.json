@@ -2,5 +2,5 @@
   "identifier": "main",
   "description": "Main gallery window",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-fullscreen"]
+  "permissions": ["core:default", "core:window:allow-set-fullscreen", "core:webview:allow-create-webview-window", "core:window:allow-close"]
 }

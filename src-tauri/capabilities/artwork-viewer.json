@@ -1,0 +1,6 @@
+{
+  "identifier": "artwork-viewer",
+  "description": "Resizable artwork viewer window",
+  "windows": ["artwork-viewer"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}

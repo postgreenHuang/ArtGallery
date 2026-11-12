@@ -139,13 +139,14 @@ export async function searchArt(
   scope: "google" | "commons",
   offset = 0,
   signal?: AbortSignal,
+  limit = 12,
 ) {
   const data = await api(
     {
       generator: "search",
       gsrsearch: buildSearch(query, scope),
       gsrnamespace: "6",
-      gsrlimit: "12",
+      gsrlimit: String(Math.max(1, Math.min(24, limit))),
       gsroffset: String(offset),
       prop: "imageinfo",
       iiprop: "url|size|mime|extmetadata",

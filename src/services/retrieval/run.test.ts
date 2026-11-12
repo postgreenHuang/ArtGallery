@@ -15,6 +15,38 @@ const args = () => ({ query: "quiet landscape", alternativeQueries: ["quiet land
 beforeEach(() => { searchForCurator.mockReset(); searchWebPages.mockReset(); });
 
 describe("bounded retrieval run", () => {
+  it("checks sourced artist names on Commons before museums and uses web pages last", async () => {
+    searchForCurator.mockResolvedValue(empty());
+    searchWebPages.mockResolvedValueOnce([{ url: "https://example.org/lead", title: "lead" }]);
+    const result = await runCuratorSearch({ ...args(), artistProfiles: [
+      { name: "Artist One", id: "Q1", status: "read", intro: "A painter.", assessment: "supported" },
+      { name: "Artist Two", id: "Q2", status: "read", intro: "A painter.", assessment: "supported" },
+    ] });
+    expect(searchForCurator.mock.calls.map((call) => [call[0], call[3].providers])).toEqual([
+      ["Artist One", ["commons"]], ["Artist Two", ["commons"]],
+      ["Artist One", ["cleveland", "chicago"]], ["Artist Two", ["met", "cleveland"]],
+    ]);
+    expect(searchForCurator.mock.calls.every((call) => call[3].targetArtist === call[0])).toBe(true);
+    expect(result.diagnostics).toMatchObject({ sourceCalls: 7, sourceLimit: 7 });
+    expect(result.webResults).toHaveLength(1);
+  });
+  it("still searches a named artist when biography relevance is uncertain because it lacks artwork images", async () => {
+    searchForCurator.mockResolvedValue(empty());
+    const result = await runCuratorSearch({ ...args(), artistProfiles: [{ name: "Vilhelm Hammershøi", id: "Q380706",
+      status: "read", intro: "A Danish painter.", assessment: "uncertain",
+      assessmentReason: "导言没有作品图像。" }] });
+    expect(searchForCurator.mock.calls[0][0]).toBe("Vilhelm Hammershøi");
+    expect(searchForCurator.mock.calls[0][3]).toMatchObject({ targetArtist: "Vilhelm Hammershøi", providers: ["commons"] });
+    expect(result.diagnostics.attemptedQueries).not.toContain("quiet landscape");
+  });
+  it("searches all of Commons for an explicit artist even if identity research returned no profile", async () => {
+    searchForCurator.mockResolvedValue(empty());
+    const result = await runCuratorSearch({ ...args(), query: "Vilhelm Hammershøi paintings",
+      constraints: { targetArtist: "Vilhelm Hammershøi" } });
+    expect(searchForCurator.mock.calls[0][0]).toBe("Vilhelm Hammershøi");
+    expect(searchForCurator.mock.calls[0][1]).toMatchObject({ scope: "commons", webSearch: false });
+    expect("artistCursors" in result && result.artistCursors?.[0].name).toBe("Vilhelm Hammershøi");
+  });
   it("stops after a useful first group and does not spend the supplement budget", async () => {
     searchForCurator.mockResolvedValueOnce({ ...empty(), artworks: [{ id: 1, title: "A work" }] });
     const result = await runCuratorSearch(args());

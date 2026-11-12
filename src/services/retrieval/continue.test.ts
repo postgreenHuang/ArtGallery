@@ -7,6 +7,19 @@ vi.mock("../commons", () => ({ searchArt }));
 beforeEach(() => { searchAcrossProviders.mockReset(); searchArt.mockReset(); });
 
 describe("bounded continuation", () => {
+  it("continues each artist's Commons cursor with that artist's name", async () => {
+    searchAcrossProviders.mockImplementation(async (query: string) => ({ artworks: [],
+      offsets: query === "Vilhelm Hammershøi" ? { commons: 48 } : {}, warning: "" }));
+    const result = await runContinuationSearch({ query: "Danish painter paintings", scope: "commons",
+      artistCursors: [{ name: "Vilhelm Hammershøi", id: "Q380706", offsets: { commons: 24 } },
+        { name: "Anna Ancher", id: "Q253446", offsets: { commons: 24 } }], signal: new AbortController().signal });
+    expect(searchAcrossProviders.mock.calls.map((call) => [call[0], call[3], call[4].targetArtist])).toEqual([
+      ["Vilhelm Hammershøi", { commons: 24 }, "Vilhelm Hammershøi"],
+      ["Anna Ancher", { commons: 24 }, "Anna Ancher"],
+    ]);
+    expect(result.artistCursors?.[0].offsets).toEqual({ commons: 48 });
+    expect(result.artistCursors?.[1].offsets).toEqual({});
+  });
   it("round-robins two available providers and preserves unqueried cursors", async () => {
     expect(continuationProviders({ commons: 8, cleveland: 8, chicago: 8, met: 8 }, 2)).toEqual(["chicago", "met"]);
     searchAcrossProviders.mockResolvedValue({ artworks: [], offsets: { chicago: 16 }, warning: "" });

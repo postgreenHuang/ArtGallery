@@ -743,6 +743,19 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   const after = await floating.boundingBox();
   expect(after!.x).toBeLessThan(before.x - 80);
   expect(after!.y).toBeGreaterThan(before.y + 50);
+  await expect(floating).toHaveCSS("resize", "both");
+  const floatingCanvas = floating.getByLabel("画作画布");
+  await floatingCanvas.dispatchEvent("wheel", { deltaY: -240 });
+  await expect(floatingCanvas).not.toHaveAttribute("data-scale", "1");
+  const imageArea = await floatingCanvas.boundingBox();
+  if (!imageArea) throw new Error("画作画布未渲染");
+  await page.mouse.move(imageArea.x + imageArea.width / 2, imageArea.y + imageArea.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(imageArea.x + imageArea.width / 2 + 45, imageArea.y + imageArea.height / 2 + 25);
+  await page.mouse.up();
+  await expect(floatingCanvas).toHaveAttribute("data-pan-x", "45");
+  await floating.getByRole("button", { name: "整幅适应窗口" }).click();
+  await expect(floatingCanvas).toHaveAttribute("data-scale", "1");
   await floating.getByRole("button", { name: "关闭图片浮窗" }).click();
   await page.getByRole("button", { name: /偏好与资料库/ }).click();
   await page.getByLabel("作品讲解文字大小").selectOption("20");
@@ -785,6 +798,36 @@ test("search, thumbnail-first, collect, reload offline, history and settings", a
   await page.getByRole("button", { name: /我的画架/ }).click();
   await expect(page.locator(".art-image img")).toHaveAttribute("src", /^blob:/);
   await page.screenshot({ path: "test-results/history.png", fullPage: true });
+});
+
+test("detached artwork page fills its resizable native window content", async ({ page }) => {
+  const payload = encodeURIComponent(JSON.stringify({ art: {
+    id: 77, file: "File:Painting.jpg", title: "Window Painting", artist: "Artist", date: "1900", description: "",
+    thumb: "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ab/Painting.jpg/640px-Painting.jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/a/ab/Painting.jpg",
+    source: "https://commons.wikimedia.org/wiki/File:Painting.jpg", width: 2000, height: 1500,
+    license: "Public domain", licenseUrl: "", attribution: "",
+  }, theme: "dark" }));
+  await page.route("https://thumb.wikimedia.org/**", (route) => route.fulfill({
+    contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+  }));
+  await page.goto(`/?floatingArtwork=${payload}`);
+  const viewer = page.getByRole("dialog", { name: "作品浮窗 Window Painting" });
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toHaveClass(/native-window/);
+  await expect(viewer).toHaveCSS("width", "1440px");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await viewer.getByRole("button", { name: "放大画作" }).click();
+  const canvas = viewer.getByLabel("画作画布");
+  await expect(canvas).not.toHaveAttribute("data-scale", "1");
+  const area = await canvas.boundingBox();
+  if (!area) throw new Error("独立窗口画布未渲染");
+  await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(area.x + area.width / 2 + 90, area.y + area.height / 2 + 60, { steps: 5 });
+  await page.mouse.up();
+  await expect(canvas).toHaveAttribute("data-pan-x", "90");
+  await expect(canvas).toHaveAttribute("data-pan-y", "60");
 });
 test("network failure remains actionable", async ({ page }) => {
   await page.route("https://commons.wikimedia.org/**", (r) =>

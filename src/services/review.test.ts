@@ -88,9 +88,10 @@ describe("review batch recovery", () => {
     });
     const result = await reviewCandidates("不要肖像", [] as Message[], { query: "art", explanation: "search" },
       Array.from({ length: 7 }, (_, index) => artwork(index + 1)), [] as WebResult[], defaultLibrary.settings, new AbortController().signal);
-    expect(result.rejectedArtworks).toHaveLength(6);
-    expect(result.artworks).toHaveLength(1);
-    expect(result.artworks[0].review?.verdict).toBe("uncertain");
+    expect(result.rejectedArtworks).toHaveLength(0);
+    expect(result.artworks).toHaveLength(7);
+    expect(result.artworks.filter((art) => art.review?.verdict === "reject")).toHaveLength(6);
+    expect(result.artworks[6].review?.verdict).toBe("uncertain");
     expect(result.warning).toContain("部分 AI 复核失败");
   });
   it("does not publish late model decisions after cancellation", async () => {
@@ -99,18 +100,32 @@ describe("review batch recovery", () => {
     await expect(reviewCandidates("不要肖像", [], { query: "art", explanation: "search" },
       [artwork(1)], [], defaultLibrary.settings, controller.signal)).rejects.toThrow("已停止");
   });
-  it("deeply reviews at most twelve first-round candidates and retains the rest as uncertain", async () => {
+  it("provides both reference and candidate thumbnails for a similarity review", async () => {
+    invoke.mockImplementation(async (...call) => {
+      const content = call[1].messages.at(-1).content;
+      expect(content.filter((item: { type: string }) => item.type === "image_url")).toHaveLength(2);
+      const payload = JSON.parse(content[0].text);
+      expect(payload.referenceImageIncluded).toBe(true);
+      expect(payload.referenceArtwork.title).toBe("Reference");
+      return response(decision("art:1", { verdict: "uncertain", reason: "相似性待核实" }));
+    });
+    const thumbnail = "https://upload.wikimedia.org/wikipedia/commons/a/ab/art.jpg";
+    await reviewCandidates("找相似作品", [], { query: "similar", explanation: "search" },
+      [{ ...artwork(1), thumb: thumbnail }], [], defaultLibrary.settings, new AbortController().signal,
+      undefined, 0, { ...artwork(9), title: "Reference", thumb: thumbnail });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it("reviews every returned candidate in batches while retaining all of them", async () => {
     invoke.mockImplementation(async (...call) => {
       const payload = JSON.parse(call[1].messages.at(-1).content);
       return response(...payload.candidates.map((item: ReviewCandidate) => decision(item.key, { quote: item.title })));
     });
     const result = await reviewCandidates("不要肖像", [], { query: "art", explanation: "search" },
       Array.from({ length: 14 }, (_, index) => artwork(index + 1)), [], defaultLibrary.settings, new AbortController().signal);
-    expect(invoke).toHaveBeenCalledTimes(2);
-    expect(result.rejectedArtworks).toHaveLength(12);
-    expect(result.artworks).toHaveLength(2);
-    expect(result.artworks.every((art) => art.review?.verdict === "uncertain")).toBe(true);
-    expect(result.warning).toContain("仅深入复核前 12 项");
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(result.rejectedArtworks).toHaveLength(0);
+    expect(result.artworks).toHaveLength(14);
+    expect(result.artworks.every((art) => art.review?.verdict === "reject")).toBe(true);
   });
   it("remembers an explicit image rejection for the same model configuration", async () => {
     invoke.mockImplementation(async (...call) => {

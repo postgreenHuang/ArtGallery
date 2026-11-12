@@ -267,6 +267,31 @@ async fn wikidata_artist_search(query:String,language:String,state:State<'_,AppS
     if !response.status().is_success(){return Err(format!("作者身份服务返回 HTTP {}",response.status()))}
     response.json().await.map_err(|_|"作者身份服务返回了无效响应".to_string())
 }
+#[tauri::command]
+async fn wikidata_artist_profile(id:String,state:State<'_,AppState>)->Result<Value,String>{
+    if !id.starts_with('Q')||id.len()>20||!id[1..].chars().all(|c|c.is_ascii_digit()){
+        return Err("无效的画家资料编号".into())
+    }
+    let response=state.client.get("https://www.wikidata.org/w/api.php")
+        .query(&[("action","wbgetentities"),("format","json"),("ids",id.as_str()),
+            ("props","labels|descriptions|sitelinks"),("languages","zh|en"),("sitefilter","zhwiki|enwiki")])
+        .timeout(Duration::from_secs(8)).send().await.map_err(|_|"画家资料服务暂不可用".to_string())?;
+    if !response.status().is_success(){return Err(format!("画家资料服务返回 HTTP {}",response.status()))}
+    let entity:Value=response.json().await.map_err(|_|"画家资料服务返回无效响应".to_string())?;
+    let links=&entity["entities"][id.as_str()]["sitelinks"];
+    let (language,title)=if let Some(title)=links["zhwiki"]["title"].as_str(){("zh",title)}
+        else if let Some(title)=links["enwiki"]["title"].as_str(){("en",title)}
+        else {return Ok(json!({"entity":entity["entities"][id.as_str()],"intro":"","language":"","url":""}))};
+    let endpoint=format!("https://{language}.wikipedia.org/w/api.php");
+    let intro=state.client.get(endpoint).query(&[("action","query"),("format","json"),
+        ("formatversion","2"),("prop","extracts"),("exintro","1"),("explaintext","1"),
+        ("exchars","1800"),("titles",title)]).timeout(Duration::from_secs(8)).send().await
+        .ok().and_then(|response|response.error_for_status().ok());
+    let intro:Value=if let Some(response)=intro{response.json().await.unwrap_or(Value::Null)}else{Value::Null};
+    let extract=intro["query"]["pages"][0]["extract"].as_str().unwrap_or("");
+    let url=format!("https://{language}.wikipedia.org/wiki/{}",title.replace(' ',"_"));
+    Ok(json!({"entity":entity["entities"][id.as_str()],"intro":extract,"language":language,"url":url}))
+}
 fn public_page_ip(ip:std::net::IpAddr)->bool {
     match ip {
         std::net::IpAddr::V4(v)=>{
@@ -522,18 +547,42 @@ fn ai_text(value:&Value)->Result<String,String>{
     if value["error"].is_object(){return Err("AI 服务返回了错误对象，请检查模型和 API 地址".into())}
     Err("AI 响应没有可用正文；请检查所选模型是否支持 Chat Completions 文本输出".into())
 }
+fn ai_budgets(purpose:Option<&str>)->[u32;2]{
+    if purpose==Some("artwork_explanation"){[4096,8192]}else{[900,4096]}
+}
+fn ai_reply(value:&Value,explanation:bool)->Result<String,String>{
+    let text=ai_text(value)?;
+    if value["choices"][0]["finish_reason"]=="length" {
+        if explanation {return Ok(format!("{}\n\n【本次回复达到输出上限，尚未讲完；可发送‘继续’接着阅读。】",text))}
+        return Err("AI 回复达到输出上限，结果不完整，请重试或缩小请求范围".into())
+    }
+    Ok(text)
+}
 #[tauri::command]
-async fn ai_plan(base_url:String,model:String,key:String,messages:Value,state:State<'_,AppState>)->Result<String,String>{
+async fn ai_plan(base_url:String,model:String,key:String,messages:Value,purpose:Option<String>,state:State<'_,AppState>)->Result<String,String>{
     let base=endpoint(&base_url)?;let url=format!("{}/chat/completions",base.as_str().trim_end_matches('/'));
     let secret=if key.is_empty(){credential(&base_url)?.get_password().unwrap_or_default()}else{key};
-    for max_tokens in [900,4096] {
+    let has_image=messages.to_string().contains("\"image_url\"");
+    let budgets=ai_budgets(purpose.as_deref());
+    for (attempt,max_tokens) in budgets.into_iter().enumerate() {
         let mut request=state.client.post(&url).json(&json!({"model":model,"messages":messages,"temperature":0.5,"max_tokens":max_tokens}));
         if !secret.is_empty(){request=request.bearer_auth(&secret);}
         let response=request.send().await.map_err(|_|"无法连接 AI 服务，请检查地址和网络".to_string())?;
-        let status=response.status();if !status.is_success(){return Err(format!("AI 服务返回 {status}，请检查密钥、模型和额度"))}
+        let status=response.status();if !status.is_success(){
+            if has_image {
+                let body=response.text().await.unwrap_or_default();
+                let detail=serde_json::from_str::<Value>(&body).ok()
+                    .and_then(|value|value.pointer("/error/message").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or_default();
+                let detail=detail.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(220).collect::<String>();
+                return Err(if detail.is_empty(){format!("AI 图片请求返回 {status}；服务未提供具体原因")}
+                    else{format!("AI 图片请求返回 {status}：{detail}")})
+            }
+            return Err(format!("AI 服务返回 {status}，请检查密钥、模型和额度"))
+        }
         let value:Value=response.json().await.map_err(|_|"AI 服务返回了非 JSON 响应".to_string())?;
-        if max_tokens==900 && value["choices"][0]["finish_reason"]=="length" {continue}
-        return ai_text(&value)
+        if attempt==0 && value["choices"][0]["finish_reason"]=="length" {continue}
+        return ai_reply(&value,purpose.as_deref()==Some("artwork_explanation"))
     }
     Err("AI 输出长度不足，未返回可用正文".into())
 }
@@ -575,7 +624,7 @@ fn main(){let result=tauri::Builder::default().plugin(tauri_plugin_opener::init(
     for directory in IMAGE_DIRS {fs::create_dir_all(root.join(directory))?;app.asset_protocol_scope().allow_directory(root.join(directory),true)?;}
     let client=reqwest::Client::builder().user_agent("AtelierGallery/0.1 (personal open-art desktop viewer)").timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none()).build()?;
     app.manage(AppState{library:Mutex::new(LibraryState{root,last:None}),brave_usage_lock:Mutex::new(()),client,downloads:tokio::sync::Semaphore::new(2),chicago_downloads:tokio::sync::Semaphore::new(1),original_cooldown:Mutex::new(None),query_cooldown:Mutex::new(None),image_cooldown:Mutex::new(None),museum_cooldowns:Mutex::new(HashMap::new()),query_pacing:tokio::sync::Mutex::new(Instant::now()),museum_pacing:tokio::sync::Mutex::new(Instant::now()),chicago_image_pacing:tokio::sync::Mutex::new(Instant::now())});Ok(())
-}).invoke_handler(tauri::generate_handler![load_library,save_library,library_backup_summary,restore_library_backup,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,brave_usage,wikidata_artist_search,read_source_page,cached_image,cache_image,image_path,reveal_artwork_file,set_artwork_wallpaper,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
+}).invoke_handler(tauri::generate_handler![load_library,save_library,library_backup_summary,restore_library_backup,library_directory,choose_directory,switch_library,commons_query,museum_query,met_query,web_image_search,web_page_search,brave_usage,wikidata_artist_search,wikidata_artist_profile,read_source_page,cached_image,cache_image,image_path,reveal_artwork_file,set_artwork_wallpaper,clear_image_cache,save_api_key,has_api_key,ai_plan,open_external]).run(tauri::generate_context!());
     if let Err(error)=result{if !error.to_string().contains("资料库恢复已取消"){
         rfd::MessageDialog::new().set_title("拾色启动失败").set_level(rfd::MessageLevel::Error).set_description(error.to_string()).show();
     }}
@@ -618,6 +667,15 @@ mod tests {use super::*;
         assert!(check_cooldown(&until,"查询").unwrap_err().contains("2 分钟"));
         *until.lock().unwrap()=Some(Instant::now()-Duration::from_secs(1));
         assert!(check_cooldown(&until,"查询").is_ok());
+    }
+    #[test]fn explanation_budget_and_truncation_are_explicit(){
+        assert_eq!(ai_budgets(Some("artwork_explanation")),[4096,8192]);
+        assert_eq!(ai_budgets(None),[900,4096]);
+        let truncated=json!({"choices":[{"finish_reason":"length","message":{"content":"unfinished"}}]});
+        assert!(ai_reply(&truncated,true).unwrap().contains("尚未讲完"));
+        assert!(ai_reply(&truncated,false).is_err());
+        let complete=json!({"choices":[{"finish_reason":"stop","message":{"content":"complete"}}]});
+        assert_eq!(ai_reply(&complete,true).unwrap(),"complete");
     }
     #[test]fn ai_text_accepts_common_completion_shapes(){
         assert_eq!(ai_text(&json!({"choices":[{"message":{"content":"hello"}}]})).unwrap(),"hello");

@@ -16,7 +16,19 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
           settings: { useAi: true, baseUrl: "https://model.example/v1", model: "fixture", scope: "google", theme: "light", explanationFontSize: 16, webSearch: true },
         });
         if (command === "save_library") { localStorage.setItem("fixture-library", args.data); return; }
-        if (command === "commons_query") return { query: { pages: [] } };
+        if (command === "commons_query") {
+          const params = new URLSearchParams(args.query);
+          const searched = params.get("gsrsearch") || "";
+          const artist = searched.includes("Bea") ? "Bea" : searched.includes("Cora") ? "Cora" : "";
+          if (!artist) return { query: { pages: [] } };
+          const next = params.get("gsroffset") === "8";
+          const pageid = artist === "Cora" ? 201 : next ? 102 : 101;
+          return { query: { pages: [{ pageid, index: 1, title: `File:${artist} Landscape ${pageid}.jpg`, imageinfo: [{
+            thumburl: `https://thumb.wikimedia.org/wikipedia/commons/thumb/b/be/${artist}_${pageid}.jpg/640px-${artist}_${pageid}.jpg`,
+            url: `https://upload.wikimedia.org/wikipedia/commons/b/be/${artist}_${pageid}.jpg`, mime: "image/jpeg",
+            width: 1600, height: 1200, extmetadata: { Artist: { value: artist }, ObjectName: { value: `${artist} Landscape ${pageid}` } },
+          }] }] }, ...(artist === "Bea" && !next ? { continue: { gsroffset: 8 } } : {}) };
+        }
         if (command === "met_query") return qualityScenario
           ? args.path.includes("/objects/")
             ? { objectID: 901, isPublicDomain: true, title: "Met Recovery", artistDisplayName: "Artem Rohovyi",
@@ -57,6 +69,11 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
           const messages = args.messages;
           const last = messages.at(-1).content;
           if (messages[0].content.includes("先决定是否需要搜索")) {
+            const requested = Array.isArray(last) ? JSON.parse(last[0].text).request : last;
+            if (String(requested).includes("推荐与《Study in Green》")) return JSON.stringify({ action: "search", query: "similar landscapes",
+              explanation: "比较参照画后推荐", recommendations: [{ nameZh: "贝娅", nameEn: "Bea", query: "Bea", reason: "相近的风景构图" }] });
+            if (String(requested).includes("继续推荐其他相似画家")) return JSON.stringify({ action: "search", query: "other similar landscapes",
+              explanation: "继续推荐其他画家", recommendations: [{ nameZh: "科拉", nameEn: "Cora", query: "Cora", reason: "另一种相近构图" }] });
             if (last === "Alex Kim") return JSON.stringify({ action: "search", query: "Alex Kim", targetArtist: "Alex Kim", explanation: "查找作者作品" });
             if (String(last).includes("更安静一点")) return JSON.stringify({ action: "search", query: "quiet landscape",
               targetArtist: "", explanation: "沿用作者并偏向宁静", criteria: { required: [], preferred: ["安静"], excluded: [], requiresImage: true } });
@@ -87,11 +104,12 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
             const actual = evidence.currentSearch.results;
             if (actual[0]?.artist !== "Artem Rohovyi") throw new Error("wrong evidence");
             if (reviewScenario) {
-              if (actual.length !== 2 || evidence.currentSearch.rejected?.length !== 2) throw new Error("review did not filter");
-              return JSON.stringify({ text: "复核后保留一件风景画，另一件仍待核实；自画像与素材网页已排除。", selectionReasons: [] });
+              if (actual.length !== 3 || actual[1]?.review?.verdict !== "reject") throw new Error("review lost its mismatch evidence");
+              return JSON.stringify({ text: "三件候选均可查看；自画像明显不符，已注明原因。", selectionReasons: [] });
             }
-            if (actual.length !== 1 || evidence.currentSearch.webResults[0].url !== "https://rohovyiart.com/") throw new Error("missing web evidence");
-            return JSON.stringify({ text: `本次找到《${actual[0].title}》，作者为 ${actual[0].artist}。另有官网网页线索，归属与授权待核实。`, selectionReasons: [{ id: actual[0].id, reason: "作者与请求一致，适合继续了解其作品。", basis: "metadata" }] });
+            if (qualityScenario) return JSON.stringify({ text: "首件明显不符，另找到一件馆藏候选。", selectionReasons: [] });
+            if (actual.length !== 1) throw new Error("missing art evidence");
+            return JSON.stringify({ text: `本次找到《${actual[0].title}》，作者为 ${actual[0].artist}。`, selectionReasons: [{ id: actual[0].id, reason: "作者与请求一致，适合继续了解其作品。", basis: "metadata" }] });
           }
           const previous = messages.slice(1, -1).map((m: any) => { try { return JSON.parse(m.content); } catch { return {}; } }).find((m: any) => m.latestDisplayedResults);
           if (!previous?.results?.length) throw new Error("lost result context");
@@ -109,6 +127,9 @@ async function mockDesktop(page: Page, failSynthesis = false, reviewScenario = f
   await page.route(/https:\/\/(www\.artic\.edu|imgs\.search\.brave\.com|images\.metmuseum\.org)\//, (route) => route.fulfill({
     contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
   }));
+  await page.route(/https:\/\/(upload|thumb)\.wikimedia\.org\//, (route) => route.fulfill({
+    contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+  }));
   await page.goto("/");
   await expect(page.locator(".discover-loading")).toHaveCount(0);
   await page.getByRole("button", { name: /开启一场艺术对话/ }).click();
@@ -122,10 +143,8 @@ test("search results ground the answer and follow-ups do not run another search"
   await expect(page.getByRole("heading", { name: "Unrelated Seurat" })).toHaveCount(0);
   await expect(page.locator(".art-number")).toHaveText("作品 1");
   await expect(page.locator(".search-notice").first()).toContainText("作者不匹配");
-  await expect(page.getByRole("link", { name: /网页 1/ })).toHaveAttribute("href", "https://rohovyiart.com/");
   await expect(page.locator(".art-selection-reason")).toContainText("作者与请求一致");
   await expect(page.locator(".art-selection-reason small")).toContainText("作者字段匹配");
-  await expect(page.locator(".web-selection-reason")).toContainText("作者待核实");
   const searches = await page.evaluate(() => (window as any).__curatorCalls.filter((c: any) => ["commons_query", "museum_query", "met_query", "web_image_search"].includes(c.command)).length);
   await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("第一张是谁画的？");
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -133,13 +152,13 @@ test("search results ground the answer and follow-ups do not run another search"
   expect(await page.evaluate(() => (window as any).__curatorCalls.filter((c: any) => ["commons_query", "museum_query", "met_query", "web_image_search"].includes(c.command)).length)).toBe(searches);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages.length)).toBe(4);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].artworks[0].curatorReason)).toBe("作者与请求一致，适合继续了解其作品。");
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].retrievalDiagnostics.sourceCalls)).toBe(4);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].retrievalDiagnostics.sourceCalls)).toBe(3);
   await page.screenshot({ path: "test-results/curator-results.png", fullPage: true });
 });
 
 test("editing intent creates a new search revision and applies source filters", async ({ page }) => {
   await mockDesktop(page, false, true);
-  await expect(page.locator(".message-text").last()).toContainText("复核后保留");
+  await expect(page.locator(".message-text").last()).toContainText("三件候选均可查看");
   await page.getByText("调整条件与检索词").click();
   await page.getByRole("textbox", { name: "编辑检索词" }).fill("Artem Rohovyi watercolor");
   await page.getByRole("button", { name: "移除偏好条件 冷色" }).click();
@@ -157,17 +176,17 @@ test("editing intent creates a new search revision and applies source filters", 
     call.args.provider === "cleveland" && new URLSearchParams(call.args.query).get("technique") === "watercolor"))).toBe(true);
 });
 
-test("rejected first candidates trigger one budgeted museum supplement", async ({ page }) => {
+test("mismatched first candidates stay visible while triggering one budgeted museum supplement", async ({ page }) => {
   await mockDesktop(page, false, false, false, false, true);
   await expect(page.getByRole("button", { name: "欣赏 Met Recovery" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
   const result = await page.evaluate(() => {
     const state = window as any;
     const message = JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1];
     return { calls: state.__curatorCalls, message };
   });
-  expect(result.message.retrievalDiagnostics).toMatchObject({ sourceCalls: 5, sourceLimit: 6, qualitySupplemented: true });
-  expect(result.message.rejectedArtworks.map((art: any) => art.title)).toContain("Study in Green");
+  expect(result.message.retrievalDiagnostics).toMatchObject({ sourceCalls: 4, sourceLimit: 7, qualitySupplemented: true });
+  expect(result.message.artworks.find((art: any) => art.title === "Study in Green").review.verdict).toBe("reject");
   expect(result.calls.filter((call: any) => call.command === "met_query" && call.args.path.includes("v1.1/search?q=Artem+Rohovyi"))).toHaveLength(1);
   expect(result.calls.filter((call: any) => call.command === "read_source_page" && String(call.args.url).includes("metmuseum"))).toHaveLength(0);
 });
@@ -200,39 +219,35 @@ test("same-name Wikidata clues stay unresolved and can seed a clarification", as
   await expect(page.getByRole("textbox", { name: "向策展人描述想看的画作" })).toHaveValue(/Wikidata Q11/);
 });
 
-test("model failure after retrieval preserves artworks and web clues", async ({ page }) => {
+test("model failure after retrieval preserves artworks", async ({ page }) => {
   await mockDesktop(page, true);
   await expect(page.locator(".message-text").last()).toContainText("AI 结果解读暂不可用");
   await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /网页 1/ })).toBeVisible();
   await expect(page.locator(".art-selection-reason")).toContainText("作者字段匹配");
   await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("继续聊聊这幅作品");
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
 });
 
-test("source text removes contradicted works while uncertain items and audit stay available", async ({ page }) => {
+test("source text marks contradicted works while all candidates and audit stay available", async ({ page }) => {
   await mockDesktop(page, false, true);
-  await expect(page.locator(".message-text").last()).toContainText("自画像与素材网页已排除");
+  await expect(page.locator(".message-text").last()).toContainText("自画像明显不符");
   await expect(page.getByRole("button", { name: "欣赏 Blue Landscape" })).toBeVisible();
   await expect(page.getByRole("button", { name: "欣赏 Untitled Study" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "欣赏 Portrait Study" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: /网页 1/ })).toHaveCount(0);
-  await expect(page.locator(".art-number")).toHaveText(["作品 1", "作品 2"]);
-  await page.getByText(/复核记录 · 保留 2 项 · 待核实 1 项 · 排除 2 项/).click();
+  await expect(page.getByRole("button", { name: "欣赏 Portrait Study" })).toBeVisible();
+  await expect(page.locator(".art-number")).toHaveText(["作品 1", "作品 2", "作品 3"]);
+  await page.getByText(/复核记录 · 候选 3 项 · 待核实 1 项 · 明显不符 1 项/).click();
   const audit = page.locator(".review-audit");
   await expect(audit).toContainText("Portrait Study");
-  await expect(audit).toContainText("Art landscapes archive");
   await expect(audit).toContainText("Self-Portrait");
-  await expect(audit).toContainText("stock photos");
   expect(await page.evaluate(() => {
     const messages = JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages;
     return { kept: messages[1].artworks.length, rejected: messages[1].rejectedArtworks.length,
       rejectedWeb: messages[1].rejectedWebResults.length, pending: messages[1].reviewPending };
-  })).toEqual({ kept: 2, rejected: 1, rejectedWeb: 1, pending: false });
+  })).toEqual({ kept: 3, rejected: 0, rejectedWeb: 0, pending: false });
   await page.getByRole("button", { name: "继续搜集作品" }).click();
   await expect(page.getByRole("button", { name: "欣赏 Second Landscape" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "欣赏 Second Portrait" })).toHaveCount(0);
-  await expect(page.locator(".art-number")).toHaveText(["作品 1", "作品 2", "作品 3"]);
+  await expect(page.getByRole("button", { name: "欣赏 Second Portrait" })).toBeVisible();
+  await expect(page.locator(".art-number")).toHaveText(["作品 1", "作品 2", "作品 3", "作品 4", "作品 5"]);
   await expect(audit).toContainText("Second Portrait");
   await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("第二张为什么待核实？");
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -246,12 +261,12 @@ test("source text removes contradicted works while uncertain items and audit sta
 test("stopping a slow review keeps candidates as uncertain and restores the composer", async ({ page }) => {
   await mockDesktop(page, false, false, true);
   await expect(page.getByText("正在逐件复核候选", { exact: false })).toBeVisible();
-  await expect(page.getByText("候选预览 · 尚未完成复核", { exact: false })).toBeVisible();
+  await expect(page.getByText("候选预览 · 后台逐件复核中", { exact: false })).toBeVisible();
   await expect(page.locator(".pending-wall").getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
   await expect(page.locator(".pending-wall .art-number")).toHaveCount(0);
-  await page.getByRole("button", { name: "停止", exact: true }).click();
+  await page.getByRole("button", { name: "停止这轮复核" }).click();
   await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
-  await expect(page.getByText("复核已停止，以下候选保留为待核实。")).toBeVisible();
+  await expect(page.getByText("复核已停止，候选保留待核实。")).toBeVisible();
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
   await page.getByRole("textbox", { name: "向策展人描述想看的画作" }).fill("继续聊聊");
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
@@ -260,6 +275,40 @@ test("stopping a slow review keeps candidates as uncertain and restores the comp
   await page.locator(".history-list article > button:first-child").click();
   await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
   await expect(page.locator(".review-audit")).toContainText("待核实");
+});
+
+test("a slow candidate review does not block another conversation turn", async ({ page }) => {
+  await mockDesktop(page, false, false, true);
+  await expect(page.locator(".pending-wall").getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
+  const composer = page.getByRole("textbox", { name: "向策展人描述想看的画作" });
+  await composer.fill("继续聊聊这幅作品");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(page.locator(".pending-wall")).toHaveCount(1);
+  await expect(page.locator(".message.user").last()).toContainText("继续聊聊这幅作品");
+  const pending = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-library")!).conversations[0].messages[1].reviewPending);
+  expect(pending).toBe(true);
+});
+
+test("similar recommendation keeps its reference, pages the named artist, and returns to the parent chat", async ({ page }) => {
+  await mockDesktop(page);
+  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
+  await page.getByRole("button", { name: "查看相似" }).first().click();
+  await expect(page.getByRole("button", { name: "← 返回上一级对话" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "欣赏 Bea Landscape 101" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续搜集作品" })).toBeVisible();
+  const planCall = await page.evaluate(() => (window as any).__curatorCalls.find((call: any) => call.command === "ai_plan" &&
+    call.args.messages[0].content.includes("先决定是否需要搜索") && Array.isArray(call.args.messages.at(-1).content)));
+  expect(planCall.args.messages.at(-1).content.some((item: any) => item.type === "image_url")).toBe(true);
+  await page.getByRole("button", { name: "继续搜集作品" }).click();
+  await expect(page.getByRole("button", { name: "欣赏 Bea Landscape 102" })).toBeVisible();
+  await page.getByRole("button", { name: "继续找其他相似作品" }).click();
+  await expect(page.getByRole("button", { name: "欣赏 Cora Landscape 201" })).toBeVisible();
+  const continuationPlan = await page.evaluate(() => (window as any).__curatorCalls.filter((call: any) => call.command === "ai_plan" &&
+    call.args.messages[0].content.includes("先决定是否需要搜索") && Array.isArray(call.args.messages.at(-1).content)).at(-1));
+  expect(continuationPlan.args.messages[0].content).toContain('"Bea"');
+  await page.getByRole("button", { name: "← 返回上一级对话" }).click();
+  await expect(page.getByRole("button", { name: "欣赏 Study in Green" })).toBeVisible();
 });
 
 test("shows unnumbered source candidates before a slower museum completes", async ({ page }) => {
@@ -282,11 +331,11 @@ test("stopping a page review keeps newly found works without claiming a match", 
   await mockDesktop(page, false, true, false, true);
   await expect(page.getByRole("button", { name: "欣赏 Blue Landscape" })).toBeVisible();
   await page.getByRole("button", { name: "继续搜集作品" }).click();
-  await expect(page.getByText("正在逐件复核新增候选", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "停止", exact: true }).click();
+  await expect(page.getByText("正在后台复核新增候选", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "停止这轮复核" }).click();
   await expect(page.getByRole("button", { name: "欣赏 Second Portrait" })).toBeVisible();
   await expect(page.getByRole("button", { name: "欣赏 Second Landscape" })).toBeVisible();
-  await expect(page.locator(".art-number")).toHaveText(["作品 1", "作品 2", "作品 3", "作品 4"]);
+  await expect(page.locator(".art-number")).toHaveText(["作品 1", "作品 2", "作品 3", "作品 4", "作品 5"]);
   await expect(page.getByText("分页复核已停止", { exact: false })).toBeVisible();
   await expect(page.locator(".review-audit")).toContainText("待核实");
 });

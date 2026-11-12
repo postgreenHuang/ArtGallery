@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("./storage", () => ({ desktop: true }));
-import { curatorHistory, referencedImages, parsePlan, parseCuratorReply, curateResults, planSearch, replyFromResults, reviseSearchPlan } from "./ai";
+import { assessArtistProfiles, curatorHistory, referencedImages, parsePlan, parseCuratorReply, curateResults, planSearch, replyFromResults, reviseSearchPlan } from "./ai";
 import { matchesArtist, searchAcrossProviders, searchForCurator } from "./artSearch";
 import { normalizeMet, searchMet } from "./met";
 import { normalizeWebPageResults, normalizeWebResults, publicHttps } from "./webSearch";
 import { defaultLibrary, type Artwork, type Message } from "../types";
 import { clearImageCapabilityCache } from "./aiCapability";
-import { clearArtistIdentityCache } from "./entityResolver";
+import { clearArtistIdentityCache, researchArtistLeads } from "./entityResolver";
 
 const art = { id: 1, title: "Water lilies", artist: "Claude Monet", date: "1916", description: "Pond", source: "https://www.metmuseum.org/art/collection/search/1" } as Artwork;
 const history: Message[] = [{ id: "a", role: "assistant", text: "搜索完成", query: "Monet", artworks: [art, { ...art, id: 2, title: "Garden", artist: "Other Artist" }], searchWarning: "部分来源不可用" }];
@@ -141,6 +141,44 @@ describe("curator grounded conversation", () => {
     const controller = new AbortController();
     invoke.mockImplementation(async () => { controller.abort(); return "late"; });
     await expect(replyFromResults("继续", [], defaultLibrary.settings, controller.signal)).rejects.toThrow("已停止");
+  });
+  it("reads a Wikipedia introduction only after a unique Wikidata artist match", async () => {
+    invoke.mockResolvedValueOnce({ search: [{ id: "Q123", label: "Artist One", description: "Russian painter" }] })
+      .mockResolvedValueOnce({ intro: "Artist One painted landscapes.", url: "https://en.wikipedia.org/wiki/Artist_One" });
+    const profiles = await researchArtistLeads(["Artist One"], new AbortController().signal);
+    expect(profiles).toMatchObject([{ name: "Artist One", id: "Q123", status: "read", intro: "Artist One painted landscapes." }]);
+    expect(invoke.mock.calls.map((call) => call[0])).toEqual(["wikidata_artist_search", "wikidata_artist_profile"]);
+  });
+  it("carries sourced artist introductions from planning into the curator explanation", async () => {
+    invoke.mockResolvedValueOnce(JSON.stringify({ action: "search", query: "Russian landscape painting",
+      explanation: "先看画家资料", artistLeads: ["Artist One"] }))
+      .mockResolvedValueOnce({ search: [{ id: "Q123", label: "Artist One", description: "Russian painter" }] })
+      .mockResolvedValueOnce({ intro: "Artist One was a Russian landscape painter.", url: "https://en.wikipedia.org/wiki/Artist_One" })
+      .mockResolvedValueOnce(JSON.stringify({ decisions: [{ id: "Q123", verdict: "supported", reason: "导言明确提到俄罗斯风景画家", quote: "Russian landscape painter" }] }))
+      .mockResolvedValueOnce(JSON.stringify({ text: "依据导言，Artist One 可作为线索。", selectionReasons: [] }));
+    const signal = new AbortController().signal;
+    const plan = await planSearch("俄罗斯自然风景画", [], { ...defaultLibrary.settings, useAi: true }, "", signal);
+    expect(plan.artistProfiles?.[0]).toMatchObject({ id: "Q123", status: "read", assessment: "supported" });
+    await curateResults("俄罗斯自然风景画", [], defaultLibrary.settings, signal,
+      { query: plan.query, artworks: [], warning: "", artistProfiles: plan.artistProfiles });
+    const payload = JSON.parse(invoke.mock.calls.at(-1)![1].messages.at(-1).content);
+    expect(payload.currentSearch.artistProfiles[0]).toMatchObject({ id: "Q123", intro: "Artist One was a Russian landscape painter." });
+  });
+  it("does not promote a model's artist judgement without a quote in the sourced introduction", async () => {
+    invoke.mockResolvedValueOnce(JSON.stringify({ decisions: [{ id: "Q123", verdict: "supported",
+      reason: "符合要求", quote: "invented evidence" }] }));
+    const profiles = await assessArtistProfiles("俄罗斯风景画", undefined,
+      [{ id: "Q123", name: "Artist One", status: "read", intro: "Artist One painted landscapes." }],
+      defaultLibrary.settings, new AbortController().signal);
+    expect(profiles[0].assessment).toBe("uncertain");
+  });
+  it("keeps an ambiguous artist lead visible without guessing an encyclopedia page", async () => {
+    invoke.mockResolvedValueOnce({ search: [
+      { id: "Q123", label: "Artist One", description: "Russian painter" },
+      { id: "Q456", label: "Artist One", description: "American painter" },
+    ] });
+    expect(await researchArtistLeads(["Artist One"], new AbortController().signal)).toMatchObject([{ status: "ambiguous" }]);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
 

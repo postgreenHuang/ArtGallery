@@ -23,6 +23,7 @@ export interface SearchConstraints {
   providers?: readonly ArtProvider[];
   allowScopeFallback?: boolean;
   criteria?: SearchCriteria;
+  pageSize?: number;
 }
 const nameTokens = (value: string): string[] => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}]+/gu) || [];
 export function matchesArtist(art: Artwork, constraints: SearchConstraints): boolean {
@@ -38,9 +39,9 @@ export function matchesArtist(art: Artwork, constraints: SearchConstraints): boo
 }
 
 export function searchProvider(provider: ArtProvider, query: string, scope: Settings["scope"], offset = 0, signal?: AbortSignal, artistOnly = false,
-  plan: SourceQueryPlan = compileSourceQuery(provider), targetArtist?: string) {
+  plan: SourceQueryPlan = compileSourceQuery(provider), targetArtist?: string, pageSize?: number) {
   return provider === "commons"
-    ? searchArt(query, scope, offset, signal)
+    ? searchArt(query, scope, offset, signal, pageSize || (artistOnly ? 24 : 12))
     : provider === "met" ? searchMet(query, offset, signal, artistOnly, plan.filters.medium)
     : searchMuseum(provider, query, offset, signal, artistOnly ? targetArtist || query : undefined, plan.filters);
 }
@@ -58,7 +59,7 @@ export async function searchAcrossProviders(
   const sourceQueries = selected.map((provider) => compileSourceQuery(provider, constraints.criteria));
   const results = await Promise.allSettled(selected.map((provider, index) =>
     searchProvider(provider, query, scope, offsets?.[provider] || 0, signal, !!constraints.targetArtist,
-      sourceQueries[index], constraints.targetArtist).then((result) => {
+      sourceQueries[index], constraints.targetArtist, constraints.pageSize).then((result) => {
         if (!signal.aborted && onProviderArtworks) {
           const matched = result.artworks.filter((art) => matchesArtist(art, constraints));
           if (matched.length) {

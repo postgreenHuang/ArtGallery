@@ -20,6 +20,10 @@ export async function readLibrary(): Promise<Library> {
   return recoverInterruptedReviews({
     ...parsed,
     viewed: Array.isArray(parsed.viewed) ? parsed.viewed : [],
+    artworkQuickQuestions: Array.isArray(parsed.artworkQuickQuestions)
+      ? [...new Set(parsed.artworkQuickQuestions.filter((question): question is string =>
+        typeof question === "string" && question.trim().length > 0 && question.length <= 200).map((question) => question.trim()))].slice(0, 30)
+      : [],
     discoveryExposure: parsed.discoveryExposure && Array.isArray(parsed.discoveryExposure.ids)
       ? { ids: parsed.discoveryExposure.ids.filter((id) => Number.isSafeInteger(id)).slice(-500),
         artistKeys: Array.isArray(parsed.discoveryExposure.artistKeys) ? parsed.discoveryExposure.artistKeys.filter((key): key is string => typeof key === "string").slice(-200) : [],

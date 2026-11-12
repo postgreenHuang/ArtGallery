@@ -1,6 +1,6 @@
 import type { ArtistAttribution, ArtworkFacets, ImageAsset, CriterionAssessment } from "./domain/artwork";
 import type { ExploreIntent } from "./domain/intent";
-import type { ArtistIdentityCandidate } from "./services/entityResolver";
+import type { ArtistIdentityCandidate, ArtistProfile } from "./services/entityResolver";
 import type { SourceQueryPlan } from "./services/retrieval/compile";
 import type { ContinuationDiagnostics } from "./services/retrieval/continue";
 import type { SourceStatus } from "./services/artSearch";
@@ -66,6 +66,7 @@ export interface Message {
   scope?: Settings["scope"];
   offset?: number;
   providerOffsets?: Partial<Record<"commons" | "cleveland" | "chicago" | "met", number>>;
+  artistCursors?: { name: string; id?: string; offsets: Partial<Record<"commons" | "cleveland" | "chicago" | "met", number>> }[];
   targetArtist?: string;
   artistAliases?: string[];
   webResults?: WebResult[];
@@ -73,6 +74,7 @@ export interface Message {
   error?: boolean;
   suggestions?: ArtistSuggestion[];
   identityCandidates?: ArtistIdentityCandidate[];
+  artistProfiles?: ArtistProfile[];
   searchCriteria?: SearchCriteria;
   exploreIntent?: ExploreIntent;
   originalRequest?: string;
@@ -135,6 +137,7 @@ export interface Library {
   conversations: Conversation[];
   saved: SavedArtwork[];
   viewed: Artwork[];
+  artworkQuickQuestions?: string[];
   discoveryExposure?: { ids: number[]; artistKeys: string[]; cultureKeys?: string[]; typeKeys?: string[]; topics: string[]; offsets: Record<string, number> };
   settings: Settings;
 }
@@ -143,6 +146,7 @@ export const defaultLibrary: Library = {
   conversations: [],
   saved: [],
   viewed: [],
+  artworkQuickQuestions: [],
   discoveryExposure: { ids: [], artistKeys: [], topics: [], offsets: {} },
   settings: {
     baseUrl: "https://api.openai.com/v1",

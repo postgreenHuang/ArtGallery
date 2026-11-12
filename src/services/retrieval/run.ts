@@ -1,4 +1,5 @@
-import type { ArtistSuggestion, Artwork, Settings, WebResult } from "../../types";
+import type { ArtistSuggestion, Artwork, Message, Settings, WebResult } from "../../types";
+import type { ArtistProfile } from "../entityResolver";
 import { searchForCurator, type ArtProvider, type SearchConstraints, type SourceStatus } from "../artSearch";
 import { searchWebPages } from "../webSearch";
 import type { SourceQueryPlan } from "./compile";
@@ -14,32 +15,112 @@ export interface RetrievalDiagnostics {
   qualitySupplemented?: boolean;
 }
 
+async function searchArtistLeads(args: {
+  profiles: ArtistProfile[]; query: string; settings: Settings; signal: AbortSignal;
+  constraints: SearchConstraints; desktop: boolean; onPhase?: (phase: string) => void;
+  onCandidatePreview?: (artworks: Artwork[]) => void;
+}) {
+  // A model may call a valid painter "uncertain" because the biography has no
+  // artwork image. Keep that uncertainty visible and still search by author.
+  const leads = args.profiles.filter((profile) => profile.name && profile.assessment !== "contradicted")
+    .sort((left, right) => Number(right.status === "read") - Number(left.status === "read")).slice(0, 2);
+  const sourceQueries: SourceQueryPlan[] = [];
+  const sourceStatuses: SourceStatus[] = [];
+  const attemptedQueries: string[] = [];
+  const artworks: Artwork[] = [];
+  const warnings: string[] = [];
+  let detailCalls = 0;
+  let sourceCalls = 0;
+  const artistCursors: NonNullable<Message["artistCursors"]> = leads.map((profile) => ({ name: profile.name, id: profile.id, offsets: {} }));
+  let failed = false;
+  const run = async (profile: ArtistProfile, providers: ArtProvider[]) => {
+    if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
+    sourceCalls += providers.length;
+    attemptedQueries.push(profile.name);
+    const found = await searchForCurator(profile.name, { ...args.settings, scope: "commons", webSearch: false }, args.signal,
+      { ...args.constraints, targetArtist: profile.name, artistAliases: [], providers, allowScopeFallback: false }, args.onCandidatePreview);
+    sourceQueries.push(...(found.sourceQueries || []));
+    sourceStatuses.push(...(found.sourceStatuses || []));
+    detailCalls += found.detailCalls || 0;
+    const cursor = artistCursors.find((item) => item.name === profile.name);
+    if (cursor) cursor.offsets = { ...cursor.offsets, ...found.offsets };
+    failed ||= found.failed;
+    if (found.warning) warnings.push(found.warning);
+    artworks.push(...found.artworks.map((art) => ({ ...art,
+      selectionReason: `按画家姓名 ${profile.name}（${profile.id || "身份未核实"}）检索；${art.selectionReason || "作者仍待核实"}` })));
+  };
+  args.onPhase?.("先按画家资料线索查询 Wikimedia Commons…");
+  for (const profile of leads) await run(profile, ["commons"]);
+  args.onPhase?.("正在按画家姓名补查其他开放馆藏…");
+  for (const [index, profile] of leads.entries()) await run(profile, index === 0 ? ["cleveland", "chicago"] : ["met", "cleveland"]);
+  const unique = artworks.filter((art, index, all) => all.findIndex((other) =>
+    (other.recordKey || `${other.provider || "commons"}:${other.id}`) === (art.recordKey || `${art.provider || "commons"}:${art.id}`)) === index);
+  const webResults: WebResult[] = [];
+  if (!unique.length && args.settings.webSearch && args.desktop) {
+    args.onPhase?.("馆藏尚无作品，最后查询公开网页线索…");
+    sourceCalls++;
+    try { webResults.push(...await searchWebPages(args.query, args.signal)); }
+    catch (error) {
+      if (args.signal.aborted) throw error;
+      warnings.push(`网页来源检索暂不可用：${String(error).slice(0, 180)}`);
+    }
+  }
+  if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
+  return { artworks: unique.slice(0, 48), webResults, offsets: {}, artistCursors, scope: "commons" as const,
+    warning: [...new Set(warnings)].join(" "), failed: failed && !unique.length && !webResults.length,
+    query: args.query, queries: attemptedQueries,
+    diagnostics: { runId: crypto.randomUUID(), sourceCalls, sourceLimit: 7, detailCalls,
+      attemptedQueries, sourceQueries, sourceStatuses } satisfies RetrievalDiagnostics };
+}
+
 export async function runRecommendationSearch(args: {
   recommendations: ArtistSuggestion[];
   settings: Settings;
   signal: AbortSignal;
+  anchor?: Artwork;
+  onCandidatePreview?: (artworks: Artwork[]) => void;
+  onPhase?: (phase: string) => void;
 }) {
-  const providerPairs: ArtProvider[][] = [["commons", "cleveland"], ["chicago", "met"], ["commons", "chicago"]];
-  const recommendations = args.recommendations.slice(0, 3);
-  const checked = await Promise.all(recommendations.map(async (candidate, index) => ({ candidate,
-    result: await searchForCurator(candidate.query, { ...args.settings, webSearch: false }, args.signal,
+  const recommendations = args.recommendations.filter((candidate, index, all) =>
+    all.findIndex((other) => other.query.trim().toLocaleLowerCase() === candidate.query.trim().toLocaleLowerCase()) === index).slice(0, 3);
+  const settings = { ...args.settings, scope: "commons" as const, webSearch: false };
+  args.onPhase?.("先按推荐画家的姓名查询整个 Wikimedia Commons…");
+  const commons = await Promise.all(recommendations.map((candidate) => searchForCurator(candidate.query, settings, args.signal,
+    { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn],
+      providers: ["commons"], allowScopeFallback: false, pageSize: 8 }, args.onCandidatePreview)));
+  if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
+  const museumByArtist: ArtProvider[] = ["cleveland", "chicago", "met"];
+  const missing = recommendations.flatMap((candidate, index) => commons[index].artworks.length ? [] : [{ candidate, index }]);
+  if (missing.length) args.onPhase?.("Commons 暂无匹配作品，按画家姓名补查其他开放馆藏…");
+  const supplemental = await Promise.all(missing.map(async ({ candidate, index }) => ({ index,
+    result: await searchForCurator(candidate.query, settings, args.signal,
       { targetArtist: candidate.query, artistAliases: [candidate.nameZh, candidate.nameEn],
-        providers: providerPairs[index], allowScopeFallback: false }),
+        providers: [museumByArtist[index]], allowScopeFallback: false }, args.onCandidatePreview),
   })));
   if (args.signal.aborted) throw new DOMException("已停止", "AbortError");
-  const artworks = checked.flatMap((item) => item.result.artworks.slice(0, 4).map((art) => ({ ...art,
-    selectionReason: `风格推荐 ${item.candidate.nameZh}：${item.candidate.reason.slice(0, 45)}；已核对作者。` })))
-    .filter((art, index, all) => all.findIndex((other) => other.id === art.id) === index);
-  const webResults = checked.flatMap((item) => item.result.webResults.slice(0, 3))
-    .filter((item, index, all) => all.findIndex((other) => other.url === item.url) === index);
-  const diagnostics: RetrievalDiagnostics = { runId: crypto.randomUUID(), sourceCalls: checked.reduce((sum, _, index) => sum + providerPairs[index].length, 0),
-    sourceLimit: 6, detailCalls: checked.reduce((sum, item) => sum + (item.result.detailCalls || 0), 0),
+  const byArtist = recommendations.map((candidate, index) => {
+    const extra = supplemental.find((item) => item.index === index)?.result;
+    return { candidate, result: commons[index], extra };
+  });
+  const anchorKey = args.anchor?.recordKey || (args.anchor ? `${args.anchor.provider || "commons"}:${args.anchor.id}` : "");
+  const artworks = byArtist.flatMap(({ candidate, result, extra }) => [...result.artworks, ...(extra?.artworks || [])].map((art) => ({ ...art,
+    selectionReason: `候选画家 ${candidate.nameZh}：${candidate.reason.slice(0, 55)}；作者字段已核对，作品与参照画的相似性仍需逐件复核。` })))
+    .filter((art, index, all) => {
+      const key = art.recordKey || `${art.provider || "commons"}:${art.id}`;
+      return key !== anchorKey && all.findIndex((other) => (other.recordKey || `${other.provider || "commons"}:${other.id}`) === key) === index;
+    });
+  const artistCursors: NonNullable<Message["artistCursors"]> = byArtist.map(({ candidate, result, extra }) => ({
+    name: candidate.query, offsets: { ...result.offsets, ...extra?.offsets },
+  }));
+  const diagnostics: RetrievalDiagnostics = { runId: crypto.randomUUID(), sourceCalls: recommendations.length + supplemental.length,
+    sourceLimit: 6, detailCalls: byArtist.reduce((sum, item) => sum + (item.result.detailCalls || 0) + (item.extra?.detailCalls || 0), 0),
     attemptedQueries: recommendations.map((item) => item.query),
-    sourceQueries: checked.flatMap((item) => item.result.sourceQueries || []),
-    sourceStatuses: checked.flatMap((item) => item.result.sourceStatuses || []) };
-  return { artworks, webResults, diagnostics, scope: args.settings.scope,
-    warning: checked.map((item) => `${item.candidate.nameEn}：${item.candidate.reason} ${item.result.warning} ${!item.result.artworks.length ? "本次无作者匹配的馆藏作品。" : ""}`).join("\n"),
-    suggestions: checked.filter((item) => item.result.artworks.length).map((item) => ({ ...item.candidate, scope: item.result.scope })) };
+    sourceQueries: byArtist.flatMap((item) => [...(item.result.sourceQueries || []), ...(item.extra?.sourceQueries || [])]),
+    sourceStatuses: byArtist.flatMap((item) => [...(item.result.sourceStatuses || []), ...(item.extra?.sourceStatuses || [])]) };
+  return { artworks, webResults: [] as WebResult[], artistCursors, diagnostics, scope: "commons" as const,
+    queries: recommendations.map((item) => item.query),
+    warning: byArtist.map((item) => `${item.candidate.nameEn}：${item.candidate.reason} ${item.result.warning} ${item.extra?.warning || ""} ${!item.result.artworks.length && !item.extra?.artworks.length ? "本次无作者匹配的馆藏作品。" : ""}`).join("\n"),
+    suggestions: byArtist.filter((item) => item.result.artworks.length || item.extra?.artworks.length).map((item) => ({ ...item.candidate, scope: "commons" as const })) };
 }
 
 export async function supplementAfterRejection(args: {
@@ -74,8 +155,16 @@ export async function runCuratorSearch(args: {
   desktop: boolean;
   onPhase?: (phase: string) => void;
   onCandidatePreview?: (artworks: Artwork[]) => void;
+  artistProfiles?: ArtistProfile[];
 }) {
   const { settings, constraints, signal } = args;
+  const namedProfiles = args.artistProfiles?.filter((profile) => profile.name && profile.assessment !== "contradicted") || [];
+  // An explicit artist must not fall back to the default Google Art Project
+  // keyword scope just because the identity service was unavailable.
+  const directArtist = constraints.targetArtist?.trim();
+  if (namedProfiles.length || directArtist)
+    return searchArtistLeads({ profiles: namedProfiles.length ? namedProfiles : [{ name: directArtist!, status: "unavailable", assessment: "uncertain" }], query: args.query, settings, constraints, signal,
+      desktop: args.desktop, onPhase: args.onPhase, onCandidatePreview: args.onCandidatePreview });
   const runId = crypto.randomUUID();
   const sourceLimit = 6;
   let sourceCalls = 0;
